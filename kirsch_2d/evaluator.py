@@ -14,10 +14,7 @@ class KirschPhysicsEvaluator(nn.Module):
         nu: float,
         sigma_0: float,
         a: float = 1.0,
-        w_pde: float = 1.0,
-        w_hole: float = 1.0,
-        w_far: float = 1.0,
-        w_sym: float = 1.0,
+        weighting_strategy = None,
     ):
         super().__init__()
         self.model = model
@@ -25,10 +22,7 @@ class KirschPhysicsEvaluator(nn.Module):
         self.nu = nu
         self.sigma_0 = sigma_0
         self.a = a
-        self.w_pde = w_pde
-        self.w_hole = w_hole
-        self.w_far = w_far
-        self.w_sym = w_sym
+        self.weighting_strategy = weighting_strategy
 
     def pde_residual(self, s, theta):
         """Calculate the 5 first-order PDE residuals."""
@@ -106,26 +100,30 @@ class KirschPhysicsEvaluator(nn.Module):
                               (tau_rt_pred - tau_rt_exact)**2)
         return loss_far
 
-    def compute_total_loss(self, s_f, theta_f, bc_dict, sync_metrics=False):
+    def compute_raw_losses(self, s_f, theta_f, bc_dict):
         loss_pde = self.pde_residual(s_f, theta_f)
         loss_hole = self.hole_bc_loss(bc_dict['hole'][0], bc_dict['hole'][1])
         loss_sym = self.sym_bc_loss(bc_dict['sym_x'][0], bc_dict['sym_x'][1], bc_dict['sym_y'][0], bc_dict['sym_y'][1])
         loss_far = self.far_field_bc_loss(bc_dict['far_field'][0], bc_dict['far_field'][1])
 
-        total_loss = (
-            self.w_pde * loss_pde +
-            self.w_hole * loss_hole +
-            self.w_sym * loss_sym +
-            self.w_far * loss_far
-        )
-
-        raw = {
+        return {
             'pde': loss_pde,
             'hole': loss_hole,
             'sym': loss_sym,
             'far': loss_far,
-            'total': total_loss,
         }
+
+    def compute_total_loss(self, s_f, theta_f, bc_dict, step: int = 0, sync_metrics: bool = False):
+        raw = self.compute_raw_losses(s_f, theta_f, bc_dict)
+        
+        if self.weighting_strategy is not None:
+            total_loss, weights = self.weighting_strategy.compute_weighted_loss(raw, step=step)
+        else:
+            total_loss = raw['pde'] + raw['hole'] + raw['sym'] + raw['far']
+
+        # Add total_loss to raw dict for logging
+        raw['total'] = total_loss
+        
         if sync_metrics:
             raw = {k: v.item() for k, v in raw.items()}
         return total_loss, raw

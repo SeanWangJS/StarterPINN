@@ -6,6 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 from geometry import LogPolarGeometrySampler
 from network import MixedPINN_LogPolar
 from evaluator import KirschPhysicsEvaluator
+from weighting import ConstantWeighting, LRAWeighting, SoftAdaptWeighting
 
 # --- 训练配置 ---
 TRAIN_CONFIG = {
@@ -51,13 +52,28 @@ def main():
         in_dim=2, out_dim=5, hidden_layers=5, hidden_neurons=96
     ).to(device)
 
-    # 权重平衡：由于全是一阶微分，收敛比纯位移法容易很多。可以先采用全 1.0 权重。
+    # ==========================
+    # 损失权重策略选择
+    # ==========================
+    
+    # 策略 1: 静态权重 (默认)
+    weighting_strategy = ConstantWeighting(
+        w_pde=1.0, w_hole=2.0, w_far=1.0, w_sym=2.0
+    ).to(device)
+
+    # 策略 2: LRA (Learning Rate Annealing)
+    # weighting_strategy = LRAWeighting(
+    #     model=model, alpha=0.9, update_freq=10
+    # ).to(device)
+
+    # 策略 3: SoftAdapt
+    # weighting_strategy = SoftAdaptWeighting(
+    #     beta=0.1
+    # ).to(device)
+
     evaluator = KirschPhysicsEvaluator(
         model, E=E, nu=nu, sigma_0=sigma_0, a=a,
-        w_pde=1.0,
-        w_hole=2.0,   # 稍微强化孔边
-        w_far=1.0,
-        w_sym=2.0,
+        weighting_strategy=weighting_strategy
     ).to(device)
 
     writer = SummaryWriter(log_dir='runs/kirsch_2d_mixed_pinn')
@@ -77,7 +93,7 @@ def main():
         s_f, t_f = sample_mini_batch(s_pool, t_pool, cfg['mini_batch_size'])
 
         optimizer_adam.zero_grad(set_to_none=True)
-        loss, raw = evaluator.compute_total_loss(s_f, t_f, bc_dict, sync_metrics=False)
+        loss, raw = evaluator.compute_total_loss(s_f, t_f, bc_dict, step=step, sync_metrics=False)
         loss.backward()
         
         # 截断梯度，防止由于 tanh 初期的过激导致爆炸
@@ -118,7 +134,7 @@ def main():
         def closure():
             nonlocal step_lbfgs
             optimizer_lbfgs.zero_grad()
-            loss, raw = evaluator.compute_total_loss(s_f, t_f, bc_dict, sync_metrics=False)
+            loss, raw = evaluator.compute_total_loss(s_f, t_f, bc_dict, step=max_steps_adam + step_lbfgs, sync_metrics=False)
             loss.backward()
             if step_lbfgs < max_iter_lbfgs and step_lbfgs % 20 == 0:
                 metrics = {k: v.item() for k, v in raw.items()}
