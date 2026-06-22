@@ -18,8 +18,11 @@ class MixedPINN_LogPolar(nn.Module):
         out_dim=5,
         hidden_layers=5,
         hidden_neurons=96,
+        use_ansatz=False,
     ):
         super().__init__()
+
+        self.use_ansatz = use_ansatz
 
         layers = []
         layers.append(nn.Linear(in_dim, hidden_neurons))
@@ -45,5 +48,18 @@ class MixedPINN_LogPolar(nn.Module):
         sigma_rr_pred = out[:, 2:3]
         sigma_tt_pred = out[:, 3:4]
         tau_rt_pred = out[:, 4:5]
+
+        if self.use_ansatz:
+            # 距离函数 D(s) = 1.0 - exp(-s)
+            # 在孔口 s=0 时为 0，在远场 s -> inf 时趋近于 1
+            D_s = 1.0 - torch.exp(-s)
+            
+            # 对称轴因子 sin(2 * theta)
+            # 在 theta=0 和 theta=pi/2 时为 0
+            sin_2t = torch.sin(2.0 * theta)
+            
+            u_theta_pred = sin_2t * u_theta_pred
+            sigma_rr_pred = D_s * sigma_rr_pred
+            tau_rt_pred = D_s * sin_2t * tau_rt_pred
 
         return u_r_pred, u_theta_pred, sigma_rr_pred, sigma_tt_pred, tau_rt_pred

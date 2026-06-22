@@ -102,8 +102,16 @@ class KirschPhysicsEvaluator(nn.Module):
 
     def compute_raw_losses(self, s_f, theta_f, bc_dict):
         loss_pde = self.pde_residual(s_f, theta_f)
-        loss_hole = self.hole_bc_loss(bc_dict['hole'][0], bc_dict['hole'][1])
-        loss_sym = self.sym_bc_loss(bc_dict['sym_x'][0], bc_dict['sym_x'][1], bc_dict['sym_y'][0], bc_dict['sym_y'][1])
+        
+        use_ansatz = getattr(self.model, 'use_ansatz', False)
+        if use_ansatz:
+            device = s_f.device
+            loss_hole = torch.tensor(0.0, device=device)
+            loss_sym = torch.tensor(0.0, device=device)
+        else:
+            loss_hole = self.hole_bc_loss(bc_dict['hole'][0], bc_dict['hole'][1])
+            loss_sym = self.sym_bc_loss(bc_dict['sym_x'][0], bc_dict['sym_x'][1], bc_dict['sym_y'][0], bc_dict['sym_y'][1])
+            
         loss_far = self.far_field_bc_loss(bc_dict['far_field'][0], bc_dict['far_field'][1])
 
         return {

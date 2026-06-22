@@ -12,7 +12,7 @@ def plot_all_fields():
     E, nu, sigma_0 = 1000.0, 0.3, 10.0
 
     model = MixedPINN_LogPolar(
-        in_dim=2, out_dim=5, hidden_layers=5, hidden_neurons=96
+        in_dim=2, out_dim=5, hidden_layers=5, hidden_neurons=96, use_ansatz=True
     ).to(device)
     
     save_dir = os.path.dirname(__file__)

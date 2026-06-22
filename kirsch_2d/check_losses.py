@@ -12,7 +12,7 @@ def print_losses():
     E, nu, sigma_0, a = 1000.0, 0.3, 10.0, 1.0
     R_max = 15.0
     
-    model = MixedPINN_LogPolar(in_dim=2, out_dim=5, hidden_layers=5, hidden_neurons=96).to(device)
+    model = MixedPINN_LogPolar(in_dim=2, out_dim=5, hidden_layers=5, hidden_neurons=96, use_ansatz=True).to(device)
     model_path = os.path.join(os.path.dirname(__file__), 'kirsch_2d_model.pth')
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=device))

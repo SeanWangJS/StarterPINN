@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import os
+import datetime
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from geometry import LogPolarGeometrySampler
@@ -14,11 +15,12 @@ TRAIN_CONFIG = {
     'bc_points': 2000,
     'mini_batch_size': 8192,
     # Adam
-    'adam_steps': 5000,
+    'adam_steps': 50000,
     'adam_lr': 1e-3,
     # L-BFGS
     'use_lbfgs': True,
     'lbfgs_steps': 1000,
+    'use_ansatz': True,  # 启用 Ansatz 硬约束
 }
 
 def setup_device():
@@ -49,34 +51,45 @@ def main():
     bc_dict = sampler.sample_boundaries(cfg['bc_points'])
 
     model = MixedPINN_LogPolar(
-        in_dim=2, out_dim=5, hidden_layers=5, hidden_neurons=96
+        in_dim=2, out_dim=5, hidden_layers=5, hidden_neurons=96,
+        use_ansatz=cfg.get('use_ansatz', False)
     ).to(device)
 
     # ==========================
     # 损失权重策略选择
     # ==========================
     
+    use_ansatz = cfg.get('use_ansatz', False)
+    target_keys = ['pde', 'far'] if use_ansatz else ['pde', 'hole', 'sym', 'far']
+    
     # 策略 1: 静态权重 (默认)
-    weighting_strategy = ConstantWeighting(
-        w_pde=1.0, w_hole=2.0, w_far=1.0, w_sym=2.0
-    ).to(device)
+    # weighting_strategy = ConstantWeighting(
+    #     w_pde=1.0, 
+    #     w_hole=0.0 if use_ansatz else 2.0, 
+    #     w_far=1.0, 
+    #     w_sym=0.0 if use_ansatz else 2.0
+    # ).to(device)
 
     # 策略 2: LRA (Learning Rate Annealing)
     # weighting_strategy = LRAWeighting(
-    #     model=model, alpha=0.9, update_freq=10
+    #     model=model, alpha=0.9, update_freq=10, target_keys=target_keys
     # ).to(device)
 
     # 策略 3: SoftAdapt
-    # weighting_strategy = SoftAdaptWeighting(
-    #     beta=0.1
-    # ).to(device)
+    weighting_strategy = SoftAdaptWeighting(
+        beta=0.1, target_keys=target_keys
+    ).to(device)
 
     evaluator = KirschPhysicsEvaluator(
         model, E=E, nu=nu, sigma_0=sigma_0, a=a,
         weighting_strategy=weighting_strategy
     ).to(device)
 
-    writer = SummaryWriter(log_dir='runs/kirsch_2d_mixed_pinn')
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = os.path.join('runs', f'kirsch_2d_mixed_pinn_{timestamp}')
+    writer = SummaryWriter(log_dir=log_dir)
+    print(f"TensorBoard logs will be saved to: {log_dir}")
+    
     optimizer_adam = torch.optim.Adam(model.parameters(), lr=cfg['adam_lr'])
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer_adam, T_max=cfg['adam_steps'], eta_min=1e-5
@@ -151,9 +164,12 @@ def main():
 
     print("\n4. Training completed.")
     save_dir = os.path.dirname(__file__)
-    model_save_path = os.path.join(save_dir, 'kirsch_2d_model.pth')
-    torch.save(model.state_dict(), model_save_path)
-    print(f"Model saved to {model_save_path}")
+    model_save_path_timestamp = os.path.join(save_dir, f'kirsch_2d_model_{timestamp}.pth')
+    model_save_path_latest = os.path.join(save_dir, 'kirsch_2d_model.pth')
+    
+    torch.save(model.state_dict(), model_save_path_timestamp)
+    torch.save(model.state_dict(), model_save_path_latest)
+    print(f"Model saved to {model_save_path_timestamp} and updated {model_save_path_latest}")
     
     print("\n5. Running plot generation...")
     # Import inside to avoid circular deps or polluting namespace
