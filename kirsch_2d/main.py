@@ -20,7 +20,7 @@ TRAIN_CONFIG = {
     # L-BFGS
     'use_lbfgs': True,
     'lbfgs_steps': 1000,
-    'use_ansatz': False,  # 启用 Ansatz 硬约束
+    'use_ansatz': True,  # 启用 Ansatz 硬约束
 }
 
 def setup_device():
@@ -63,12 +63,12 @@ def main():
     target_keys = ['pde', 'far'] if use_ansatz else ['pde', 'hole', 'sym', 'far']
     
     # 策略 1: 静态权重 (默认)
-    # weighting_strategy = ConstantWeighting(
-    #     w_pde=1.0, 
-    #     w_hole=0.0 if use_ansatz else 2.0, 
-    #     w_far=1.0, 
-    #     w_sym=0.0 if use_ansatz else 2.0
-    # ).to(device)
+    weighting_strategy = ConstantWeighting(
+        w_pde=1.0, 
+        w_hole=0.0 if use_ansatz else 2.0, 
+        w_far=1.0, 
+        w_sym=0.0 if use_ansatz else 2.0
+    ).to(device)
 
     # 策略 2: LRA (Learning Rate Annealing)
     # weighting_strategy = LRAWeighting(
@@ -76,9 +76,9 @@ def main():
     # ).to(device)
 
     # 策略 3: SoftAdapt
-    weighting_strategy = SoftAdaptWeighting(
-        beta=0.1, target_keys=target_keys
-    ).to(device)
+    # weighting_strategy = SoftAdaptWeighting(
+    #     beta=0.1, target_keys=target_keys
+    # ).to(device)
 
     evaluator = KirschPhysicsEvaluator(
         model, E=E, nu=nu, sigma_0=sigma_0, a=a,

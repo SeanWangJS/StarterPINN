@@ -1,160 +1,163 @@
 """
-Kirsch 2D PINN - 径向偏置采样分布可视化
-展示三个密度分区：高应力区 r < 1.3a / 过渡区 1.3-2.5a / 远端区 r > 2.5a
+Kirsch 2D PINN - 对数极坐标与物理坐标空间采样分布可视化
+展示计算域 (s, theta) 的均匀分布以及经过映射后在物理域 (x, y) 的自适应局部加密特征。
 """
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.colors import Normalize
-from matplotlib.cm import ScalarMappable
-import torch
-from geometry import KirschGeometrySampler
-
-
-def classify_points(x_np, y_np, a, thresholds=(1.3, 2.5)):
-    """按径向距离将采样点分为三层"""
-    r = np.sqrt(x_np**2 + y_np**2) / a
-    inner  = r <= thresholds[0]
-    middle = (r > thresholds[0]) & (r <= thresholds[1])
-    outer  = r > thresholds[1]
-    return inner, middle, outer
-
+import os
+from geometry import LogPolarGeometrySampler
 
 def main():
     # ── 参数与采样 ──────────────────────────────────────────
-    W, H, a = 10.0, 10.0, 1.0
-    k = 2.0           # 偏置指数，与 main.py 保持一致
-    N_VIZ = 10000     # 可视化点数（适量避免过密）
-    N_BC  = 400       # 每条边界点数
+    R_max = 15.0
+    a = 1.0
+    s_max = np.log(R_max / a)
+    
+    N_DOMAIN = 3000     # 域内点数
+    N_BC = 150          # 边界点数
 
-    sampler = KirschGeometrySampler(W=W, H=H, a=a, device='cpu')
-    x_biased, y_biased = sampler.sample_radial_biased(N_VIZ, k=k, requires_grad=False)
-    x_unif,   y_unif   = sampler.sample_domain(N_VIZ, requires_grad=False)
+    sampler = LogPolarGeometrySampler(R_max=R_max, a=a, device='cpu')
+    s_dom, t_dom = sampler.sample_domain(N_DOMAIN, requires_grad=False)
     bc_dict = sampler.sample_boundaries(N_BC, requires_grad=False)
 
-    # ── NumPy 转换 ──────────────────────────────────────────
-    xb = x_biased.numpy().flatten();  yb = y_biased.numpy().flatten()
-    xu = x_unif.numpy().flatten();    yu = y_unif.numpy().flatten()
+    # 转换成 numpy 数组
+    s_dom_np = s_dom.numpy().flatten()
+    t_dom_np = t_dom.numpy().flatten()
+    
+    # 计算物理域坐标 (x, y)
+    r_dom_np = a * np.exp(s_dom_np)
+    x_dom_np = r_dom_np * np.cos(t_dom_np)
+    y_dom_np = r_dom_np * np.sin(t_dom_np)
 
-    # ── 分区颜色 ───────────────────────────────────────────
-    ZONE_COLORS = {
-        'inner':  '#E74C3C',   # 高应力区  r < 1.3a → 红
-        'middle': '#9B59B6',   # 过渡区    1.3-2.5a → 紫
-        'outer':  '#5DADE2',   # 远端区    r > 2.5a → 蓝
-    }
-    ZONE_ALPHA = {'inner': 0.8, 'middle': 0.6, 'outer': 0.25}
-
-    # ── 绘图 ───────────────────────────────────────────────
+    # ── 绘图设置 ───────────────────────────────────────────────
     plt.rcParams.update({
         'font.family': 'sans-serif',
         'font.sans-serif': ['DejaVu Sans', 'Arial'],
-        'axes.spines.top': False, 'axes.spines.right': False,
+        'axes.spines.top': False,
+        'axes.spines.right': False,
     })
 
-    fig = plt.figure(figsize=(18, 8), dpi=200)
-    fig.patch.set_facecolor('#F7F9FC')
+    fig = plt.figure(figsize=(18, 5.5), dpi=200)
+    fig.patch.set_facecolor('#F8F9FA')
 
-    # 三列布局：左=均匀，中=偏置全局，右=偏置缩放
+    # 三列布局：左 = 计算域，中 = 物理域全局，右 = 物理域孔口放大
     axes = fig.subplots(1, 3)
+    
     titles = [
-        'Uniform Sampling (k=0)\n[Before]',
-        'Radial-Biased Sampling (k=2.0)\nFull Domain View',
-        'Radial-Biased Sampling (k=2.0)\nZoomed Near-Hole (r < 4a)',
+        'Computational Domain (s, $\\theta$)\n[Uniform Flat Space]',
+        'Physical Domain (x, y) [Full View]\n[Natural Exponential Growth]',
+        'Physical Domain (x, y) [Near-Hole Zoom]\n[Dense Sampling at Stress Zone]',
     ]
+    
     for ax, title in zip(axes, titles):
         ax.set_facecolor('#FFFFFF')
-        ax.grid(True, linestyle='--', alpha=0.4, color='#D5DBDB', zorder=0)
-        ax.set_aspect('equal')
-        ax.set_title(title, fontsize=11, fontweight='bold', pad=10, color='#2C3E50')
+        ax.grid(True, linestyle='--', alpha=0.5, color='#BDC3C7', zorder=0)
+        ax.set_title(title, fontsize=11, fontweight='bold', pad=12, color='#2C3E50')
 
-    # ── 辅助函数：绘制一幅采样图 ─────────────────────────────
-    def draw_scatter(ax, x_np, y_np, xlim, ylim):
-        inn, mid, out = classify_points(x_np, y_np, a)
-        # 画点（从外到内，保证内圈在最上层）
-        ax.scatter(x_np[out],  y_np[out],  s=0.8, c=ZONE_COLORS['outer'],
-                   alpha=ZONE_ALPHA['outer'],  linewidths=0, zorder=2)
-        ax.scatter(x_np[mid],  y_np[mid],  s=1.5, c=ZONE_COLORS['middle'],
-                   alpha=ZONE_ALPHA['middle'], linewidths=0, zorder=3)
-        ax.scatter(x_np[inn],  y_np[inn],  s=2.5, c=ZONE_COLORS['inner'],
-                   alpha=ZONE_ALPHA['inner'],  linewidths=0, zorder=4)
-        # 孔口边界
-        theta = np.linspace(0, 2 * np.pi, 300)
-        ax.fill(a * np.cos(theta), a * np.sin(theta),
-                color='#ECF0F1', zorder=5)
-        ax.plot(a * np.cos(theta), a * np.sin(theta),
-                'k-', lw=1.5, zorder=6)
-        # 分区圈虚线
-        for r_circle, color in zip([1.3, 2.5], ['#E74C3C', '#9B59B6']):
-            ax.plot(r_circle * np.cos(theta), r_circle * np.sin(theta),
-                    '--', color=color, lw=0.8, alpha=0.7, zorder=7)
-        ax.set_xlim(*xlim); ax.set_ylim(*ylim)
-        ax.set_xlabel('x', fontsize=10); ax.set_ylabel('y', fontsize=10)
+    # 颜色配置
+    color_domain = '#7F8C8D'     # 域内点：灰色
+    color_hole = '#E74C3C'       # 孔口：红色
+    color_far = '#2980B9'        # 远场：蓝色
+    color_sym_x = '#27AE60'      # 对称面x：绿色
+    color_sym_y = '#8E44AD'      # 对称面y：紫色
 
-    # ── 左图：均匀采样 ─────────────────────────────────────
-    draw_scatter(axes[0], xu, yu, (-W-0.5, W+0.5), (-H-0.5, H+0.5))
+    # ── 1. 绘制计算域 (s, theta) ─────────────────────────────
+    ax0 = axes[0]
+    ax0.scatter(s_dom_np, t_dom_np, s=1.0, c=color_domain, alpha=0.5, zorder=2)
+    
+    # 绘制计算域边界点
+    s_hole, t_hole = bc_dict['hole']
+    s_far, t_far = bc_dict['far_field']
+    s_sym_x, t_sym_x = bc_dict['sym_x']
+    s_sym_y, t_sym_y = bc_dict['sym_y']
+    
+    ax0.scatter(s_hole.numpy(), t_hole.numpy(), s=5, c=color_hole, zorder=3, label='Hole BC (s=0)')
+    ax0.scatter(s_far.numpy(), t_far.numpy(), s=5, c=color_far, zorder=3, label=f'Far BC (s={s_max:.2f})')
+    ax0.scatter(s_sym_x.numpy(), t_sym_x.numpy(), s=5, c=color_sym_x, zorder=3, label='Sym-X BC ($\\theta$=0)')
+    ax0.scatter(s_sym_y.numpy(), t_sym_y.numpy(), s=5, c=color_sym_y, zorder=3, label='Sym-Y BC ($\\theta$={:.2f})'.format(np.pi/2))
+    
+    ax0.set_xlim(-0.1, s_max + 0.1)
+    ax0.set_ylim(-0.1, np.pi/2 + 0.1)
+    ax0.set_xlabel('s = ln(r/a)', fontsize=10, fontweight='bold')
+    ax0.set_ylabel('$\\theta$ (rad)', fontsize=10, fontweight='bold')
+    ax0.legend(loc='upper right', fontsize=8)
 
-    # 右两图：径向偏置采样（全局 & 局部）
-    draw_scatter(axes[1], xb, yb, (-W-0.5, W+0.5), (-H-0.5, H+0.5))
-    draw_scatter(axes[2], xb, yb, (-4*a, 4*a), (-4*a, 4*a))
+    # ── 2. 绘制物理域全局 (x, y) ─────────────────────────────
+    ax1 = axes[1]
+    ax1.scatter(x_dom_np, y_dom_np, s=1.0, c=color_domain, alpha=0.4, zorder=2)
+    
+    # 物理域边界映射
+    def to_cartesian(s, t):
+        r = a * np.exp(s.numpy())
+        return r * np.cos(t.numpy()), r * np.sin(t.numpy())
+    
+    xh, yh = to_cartesian(s_hole, t_hole)
+    xf, yf = to_cartesian(s_far, t_far)
+    xsx, ysx = to_cartesian(s_sym_x, t_sym_x)
+    xsy, ysy = to_cartesian(s_sym_y, t_sym_y)
+    
+    ax1.scatter(xh, yh, s=4, c=color_hole, zorder=3)
+    ax1.scatter(xf, yf, s=4, c=color_far, zorder=3)
+    ax1.scatter(xsx, ysx, s=4, c=color_sym_x, zorder=3)
+    ax1.scatter(xsy, ysy, s=4, c=color_sym_y, zorder=3)
+    
+    # 画出边界轮廓线
+    theta_arc = np.linspace(0, np.pi/2, 200)
+    ax1.plot(a * np.cos(theta_arc), a * np.sin(theta_arc), 'k-', lw=1.5, zorder=4)
+    ax1.plot(R_max * np.cos(theta_arc), R_max * np.sin(theta_arc), 'k--', lw=1.0, zorder=4)
+    
+    ax1.set_xlim(-0.5, R_max + 0.5)
+    ax1.set_ylim(-0.5, R_max + 0.5)
+    ax1.set_aspect('equal')
+    ax1.set_xlabel('x', fontsize=10, fontweight='bold')
+    ax1.set_ylabel('y', fontsize=10, fontweight='bold')
 
-    # ── 边界配点（仅在全局视图上展示）─────────────────────
-    for ax_idx, bc_colors in [
-        (1, {'left': '#E74C3C', 'right': '#E74C3C',
-             'top': '#2ECC71', 'bottom': '#2ECC71', 'hole': '#F39C12'}),
-    ]:
-        ax = axes[ax_idx]
-        for name, (xc, yc) in bc_dict.items():
-            ax.scatter(xc.numpy(), yc.numpy(), s=5,
-                       c=bc_colors[name], zorder=8, linewidths=0)
+    # ── 3. 绘制物理域局部放大 (x, y) ─────────────────────────
+    ax2 = axes[2]
+    ax2.scatter(x_dom_np, y_dom_np, s=2.0, c=color_domain, alpha=0.6, zorder=2)
+    ax2.scatter(xh, yh, s=8, c=color_hole, zorder=3)
+    ax2.scatter(xsx, ysx, s=8, c=color_sym_x, zorder=3)
+    ax2.scatter(xsy, ysy, s=8, c=color_sym_y, zorder=3)
+    
+    ax2.plot(a * np.cos(theta_arc), a * np.sin(theta_arc), 'k-', lw=2.0, zorder=4)
+    
+    # 绘制参考圆弧线
+    for r_ref in [1.5 * a, 2.5 * a, 4.0 * a]:
+        ax2.plot(r_ref * np.cos(theta_arc), r_ref * np.sin(theta_arc), ':', color='#7F8C8D', lw=0.8, zorder=1)
+        ax2.text(r_ref * np.cos(np.pi/4), r_ref * np.sin(np.pi/4), f'r={r_ref:.1f}a', 
+                 fontsize=7, color='#7F8C8D', ha='center', va='center', rotation=-45,
+                 bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.7))
 
-    # ── 统计注释 ───────────────────────────────────────────
-    for ax_idx, x_np, y_np, label in [
-        (0, xu, yu, 'Uniform'), (1, xb, yb, 'Biased k=2')
-    ]:
-        inn, mid, out = classify_points(x_np, y_np, a)
-        n_tot = len(x_np)
-        pct_i = inn.sum() / n_tot * 100
-        pct_m = mid.sum() / n_tot * 100
-        pct_o = out.sum() / n_tot * 100
-        axes[ax_idx].text(
-            0.97, 0.03,
-            f"r<1.3a: {pct_i:.1f}%\n1.3-2.5a: {pct_m:.1f}%\nr>2.5a: {pct_o:.1f}%",
-            transform=axes[ax_idx].transAxes,
-            ha='right', va='bottom', fontsize=8.5, color='#2C3E50',
-            bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='#CCCCCC', alpha=0.85)
-        )
+    ax2.set_xlim(-0.1, 4.0 * a)
+    ax2.set_ylim(-0.1, 4.0 * a)
+    ax2.set_aspect('equal')
+    ax2.set_xlabel('x', fontsize=10, fontweight='bold')
+    ax2.set_ylabel('y', fontsize=10, fontweight='bold')
 
-    # ── 图例 ───────────────────────────────────────────────
+    # ── 图例与标题 ───────────────────────────────────────────
     legend_patches = [
-        mpatches.Patch(color=ZONE_COLORS['inner'],  label='High-Stress Zone  r < 1.3a'),
-        mpatches.Patch(color=ZONE_COLORS['middle'], label='Transition Zone  1.3a < r < 2.5a'),
-        mpatches.Patch(color=ZONE_COLORS['outer'],  label='Far-Field Zone  r > 2.5a'),
+        mpatches.Patch(color=color_domain, label='Domain Collocation Points'),
+        mpatches.Patch(color=color_hole, label='Hole BC (Traction-Free)'),
+        mpatches.Patch(color=color_far, label='Far-Field BC (Dirichlet)'),
+        mpatches.Patch(color=color_sym_x, label='Symmetry X BC (u_theta=0, tau_rt=0)'),
+        mpatches.Patch(color=color_sym_y, label='Symmetry Y BC (u_theta=0, tau_rt=0)'),
     ]
     fig.legend(handles=legend_patches, loc='lower center', ncol=3,
-               fontsize=10, frameon=True, edgecolor='#CCCCCC',
-               bbox_to_anchor=(0.5, -0.02))
+               fontsize=9, frameon=True, edgecolor='#CCCCCC',
+               bbox_to_anchor=(0.5, -0.06))
 
     plt.suptitle(
-        'Radial-Biased Sampling Strategy  |  p(r) ∝ (a/r)^k, k=2.0',
-        fontsize=14, fontweight='bold', color='#1A252F', y=1.01
+        'Log-Polar Coordinate Mapping & Adaptive Sampling Visualization',
+        fontsize=13, fontweight='bold', color='#1A252F', y=1.01
     )
 
     plt.tight_layout()
-    save_path = 'geometry_samples_biased.png'
-    plt.savefig(save_path, dpi=200, bbox_inches='tight',
-                facecolor=fig.get_facecolor())
+    save_path = os.path.join(os.path.dirname(__file__), 'geometry_samples_logpolar.png')
+    plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close()
-    print(f"Biased sampling visualization saved to: {save_path}")
-
-    # ── 密度统计对比 ────────────────────────────────────────
-    print("\n--- Zone Distribution Comparison ---")
-    for label, x_np, y_np in [("Uniform ", xu, yu), ("Biased  ", xb, yb)]:
-        inn, mid, out = classify_points(x_np, y_np, a)
-        n = len(x_np)
-        print(f"  {label}| r<1.3a: {inn.sum()/n*100:5.1f}%  "
-              f"| 1.3-2.5a: {mid.sum()/n*100:5.1f}%  "
-              f"| r>2.5a: {out.sum()/n*100:5.1f}%")
-
+    print(f"Sampling visualization saved to: {save_path}")
 
 if __name__ == '__main__':
     main()
