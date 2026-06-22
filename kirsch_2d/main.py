@@ -20,7 +20,7 @@ TRAIN_CONFIG = {
     # L-BFGS
     'use_lbfgs': True,
     'lbfgs_steps': 1000,
-    'use_ansatz': True,  # 启用 Ansatz 硬约束
+    'use_ansatz': False,  # 启用 Ansatz 硬约束
 }
 
 def setup_device():
