@@ -50,8 +50,11 @@ def check_hole_stress_and_plot_dimensionless():
     
     # 2. 位移分量（无量纲，即除以 sigma_0 * a / E）
     # 在 r = a 处：
-    exact_u_r = 1.0 + (5.0 + nu) / 4.0 * np.cos(2.0 * theta_vals)
-    exact_u_theta = - (5.0 + nu) / 4.0 * np.sin(2.0 * theta_vals)
+    # 根据严格的理论推导 (基于应变积分):
+    # u_r_exact = \sigma_0 a / E * (1.0 + 2.0 * \cos(2\theta))
+    # exact_u_theta = \sigma_0 a / E * (-2.0 * \sin(2\theta))
+    exact_u_r = 1.0 + 2.0 * np.cos(2.0 * theta_vals)
+    exact_u_theta = - 2.0 * np.sin(2.0 * theta_vals)
     
     # 绘图设置
     fig, axes = plt.subplots(2, 3, figsize=(18, 11))

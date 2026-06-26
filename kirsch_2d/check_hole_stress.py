@@ -51,15 +51,11 @@ def check_hole_stress_and_plot():
     exact_sig_tt = sigma_0 * (1.0 - 2.0 * np.cos(2.0 * theta_vals))
     
     # 2. 位移分量
-    G = E / (2.0 * (1.0 + nu))
-    kappa = (3.0 - nu) / (1.0 + nu)
-    # r = a
-    exact_u_r = (sigma_0 * a / (8.0 * G)) * (
-        (kappa - 1.0) + 2.0 + np.cos(2.0 * theta_vals) * (2.0 + (kappa + 1.0) - 1.0)
-    )
-    exact_u_theta = (sigma_0 * a / (8.0 * G)) * np.sin(2.0 * theta_vals) * (
-        -2.0 - (kappa - 1.0) - 1.0
-    )
+    # 根据严格的理论推导 (基于应变积分并代入 r=a):
+    # exact_u_r = \sigma_0 a / E * (1.0 + 2.0 * \cos(2\theta))
+    # exact_u_theta = \sigma_0 a / E * (-2.0 * \sin(2\theta))
+    exact_u_r = (sigma_0 * a / E) * (1.0 + 2.0 * np.cos(2.0 * theta_vals))
+    exact_u_theta = (sigma_0 * a / E) * (-2.0 * np.sin(2.0 * theta_vals))
     
     # 绘图设置
     fig, axes = plt.subplots(2, 3, figsize=(18, 11))

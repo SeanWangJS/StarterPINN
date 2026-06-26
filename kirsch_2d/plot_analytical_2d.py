@@ -38,13 +38,14 @@ def kirsch_analytical_displacements(x, y, a=1.0, E=1000.0, nu=0.3, sigma_0=10.0)
     G = E / (2 * (1 + nu))
     kappa = (3 - nu) / (1 + nu)  # 平面应力条件下的 Kolosov 常数
     
-    # 极坐标系下的位移
-    u_r = (sigma_0 * a / (8 * G)) * (
-        (r / a) * (kappa - 1) + 2 * (a / r) + np.cos(2 * theta) * (2 * (r / a) + (a / r) * (kappa + 1) - (a / r)**3)
+    # 极坐标系下的正确理论位移解 (通过对Kirsch应力场应用胡克定律并严格积分得到)
+    u_r = (sigma_0 * a / E) * (
+        0.5 * (1 - nu) * (r / a) + 0.5 * (1 + nu) * (a / r) + 
+        np.cos(2 * theta) * (0.5 * (1 + nu) * (r / a) + 2 * (a / r) - 0.5 * (1 + nu) * (a / r)**3)
     )
     
-    u_theta = (sigma_0 * a / (8 * G)) * np.sin(2 * theta) * (
-        -2 * (r / a) - (a / r) * (kappa - 1) - (a / r)**3
+    u_theta = (sigma_0 * a / E) * np.sin(2 * theta) * (
+        -0.5 * (1 + nu) * (r / a) + (nu - 1) * (a / r) - 0.5 * (1 + nu) * (a / r)**3
     )
     
     # 极坐标位移变换到笛卡尔坐标系
