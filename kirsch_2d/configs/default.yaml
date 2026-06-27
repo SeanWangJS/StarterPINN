@@ -1,0 +1,31 @@
+train:
+  domain_points: 40000
+  bc_points: 2000
+  mini_batch_size: 8192
+  adam_steps: 50000
+  adam_lr: 0.001
+  use_lbfgs: true
+  lbfgs_steps: 1000
+  use_ansatz: true
+
+model:
+  in_dim: 2
+  out_dim: 5
+  hidden_layers: 5
+  hidden_neurons: 96
+
+physics:
+  E: 1000.0
+  nu: 0.3
+  sigma_0: 10.0
+  a: 1.0
+  W: 10.0
+  H: 10.0
+  R_max: 15.0
+
+weighting:
+  strategy: "constant" # Options: constant, lra, softadapt
+  w_pde: 1.0
+  w_hole: 0.0
+  w_sym: 0.0
+  w_far: 1.0
