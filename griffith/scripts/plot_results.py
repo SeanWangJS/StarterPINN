@@ -34,11 +34,14 @@ def reflect_to_full_field(X_half, Y, U_half, V_half, PHI_half):
     V_full   = np.hstack([V_left[:, :-1], V_half])
     PHI_full = np.hstack([PHI_left[:, :-1], PHI_half])
 
-    # Build matching X grid
+    # Build matching X and Y grids
     X_left = -np.fliplr(X_half)
-    X_full  = np.hstack([X_left[:, :-1], X_half])
+    X_full = np.hstack([X_left[:, :-1], X_half])
+    
+    Y_left = np.fliplr(Y)
+    Y_full = np.hstack([Y_left[:, :-1], Y])
 
-    return X_full, Y, U_full, V_full, PHI_full
+    return X_full, Y_full, U_full, V_full, PHI_full
 
 
 def plot_final_results():
@@ -91,10 +94,8 @@ def plot_final_results():
             phys['E'], phys['nu'], phys['G_c'], phys['l_0'], a_phys, phys['k']
         ).to(device)
 
-        eps_xx, eps_yy, eps_xy, _, u_nd, v_nd = evaluator.compute_strains(pts_nd)
+        _, _, _, _, u_nd, v_nd, _, sig_yy_nd, _ = evaluator.compute_strains(pts_nd)
         phi = phi_net(pts_nd)
-        _, sig_xx_nd, sig_yy_nd, _ = evaluator.compute_energy_and_stress(
-            eps_xx, eps_yy, eps_xy, phi)
 
     ny, nx_half = X_half.shape
     U_half   = (u_nd.detach().cpu().numpy().reshape(ny, nx_half)) * L0
@@ -103,7 +104,7 @@ def plot_final_results():
     SIG_half = sig_yy_nd.detach().cpu().numpy().reshape(ny, nx_half) * E0
 
     # ---- Mirror to full field ----
-    X_full, _, U_full, V_full, PHI_full = reflect_to_full_field(X_half, Y, U_half, V_half, PHI_half)
+    X_full, Y_full, U_full, V_full, PHI_full = reflect_to_full_field(X_half, Y, U_half, V_half, PHI_half)
     _, _, _, _, SIG_full = reflect_to_full_field(X_half, Y, SIG_half, SIG_half, SIG_half)
     # For stress σ_yy: symmetric about x=0
     SIG_full = np.hstack([np.fliplr(SIG_half)[:, :-1], SIG_half])
@@ -111,7 +112,7 @@ def plot_final_results():
     # ---- Analytical Westergaard comparison ----
     sys.path.insert(0, os.path.dirname(__file__))
     from plot_analytical import westergaard_field
-    import yaml
+    
     E_prime = phys['E'] / (1 - phys['nu']**2)
     v_max   = cfg['train']['v_max']
     sigma_0 = E_prime * (v_max / (H / 2.0))
@@ -122,21 +123,23 @@ def plot_final_results():
     # ---- Plot ----
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    im1 = axes[0, 0].pcolormesh(X_full, Y, V_full, cmap='jet', shading='auto')
+    im1 = axes[0, 0].pcolormesh(X_full, Y_full, V_full, cmap='jet', shading='auto')
     axes[0, 0].set_title('Predicted Vertical Displacement (v) [mm]')
     axes[0, 0].set_aspect('equal'); fig.colorbar(im1, ax=axes[0, 0])
 
-    im2 = axes[0, 1].pcolormesh(X_full, Y, PHI_full, cmap='hot_r', shading='auto', vmin=0, vmax=1)
+    im2 = axes[0, 1].pcolormesh(X_full, Y_full, PHI_full, cmap='hot_r', shading='auto', vmin=0, vmax=1)
     axes[0, 1].set_title(r'Predicted Phase Field ($\phi$)')
     axes[0, 1].set_aspect('equal'); fig.colorbar(im2, ax=axes[0, 1])
 
-    vmax_s = np.percentile(SIG_full, 95)
-    vmin_s = np.min(SIG_full)
-    im3 = axes[1, 0].pcolormesh(X_full, Y, SIG_full, cmap='jet', shading='auto', vmin=vmin_s, vmax=vmax_s)
+    # Use the theoretical stress range for both plots to allow direct comparison
+    vmax_ana = sigma_0 * 5
+    vmin_ana = -sigma_0
+
+    im3 = axes[1, 0].pcolormesh(X_full, Y_full, SIG_full, cmap='jet', shading='auto', vmin=vmin_ana, vmax=vmax_ana)
     axes[1, 0].set_title(r'Predicted Stress ($\sigma_{yy}$) [MPa]')
     axes[1, 0].set_aspect('equal'); fig.colorbar(im3, ax=axes[1, 0])
 
-    im4 = axes[1, 1].pcolormesh(X_ana, Y_ana, sig_yy_ana, cmap='jet', shading='auto', vmin=vmin_s, vmax=vmax_s)
+    im4 = axes[1, 1].pcolormesh(X_ana, Y_ana, sig_yy_ana, cmap='jet', shading='auto', vmin=vmin_ana, vmax=vmax_ana)
     axes[1, 1].set_title(r'Analytical Stress ($\sigma_{yy}$) [MPa]')
     axes[1, 1].set_aspect('equal'); fig.colorbar(im4, ax=axes[1, 1])
 

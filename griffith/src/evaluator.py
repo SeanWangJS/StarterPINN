@@ -53,12 +53,22 @@ class PFPhysicsEvaluator(nn.Module):
         """
         pts_nd : (N, 2) tensor of NON-DIMENSIONAL coordinates (x*, y*)
         Returns eps_xx, eps_yy, eps_xy (all dimensionless),
-                plus pts_nd (with grad), u*, v*
+                plus pts_nd (with grad), u*, v*, and NN predicted stresses
         """
         pts_nd = pts_nd.clone().requires_grad_(True)
-        uv_nd = self.u_net(pts_nd)          # network outputs u*, v*
-        u_nd = uv_nd[:, 0:1]
-        v_nd = uv_nd[:, 1:2]
+        out_nd = self.u_net(pts_nd)          # network outputs u*, v*, sig_xx*, sig_yy*, tau_xy*
+        u_nd = out_nd[:, 0:1]
+        v_nd = out_nd[:, 1:2]
+        
+        # Extract NN stresses if using Mixed-PINN (5 outputs)
+        if out_nd.shape[1] == 5:
+            sig_xx_nn = out_nd[:, 2:3]
+            sig_yy_nn = out_nd[:, 3:4]
+            tau_xy_nn = out_nd[:, 4:5]
+        else:
+            sig_xx_nn = None
+            sig_yy_nn = None
+            tau_xy_nn = None
 
         grad_u = torch.autograd.grad(
             u_nd.sum(), pts_nd, create_graph=True)[0]
@@ -69,7 +79,7 @@ class PFPhysicsEvaluator(nn.Module):
         eps_yy = grad_v[:, 1:2]
         eps_xy = 0.5 * (grad_u[:, 1:2] + grad_v[:, 0:1])
 
-        return eps_xx, eps_yy, eps_xy, pts_nd, u_nd, v_nd
+        return eps_xx, eps_yy, eps_xy, pts_nd, u_nd, v_nd, sig_xx_nn, sig_yy_nn, tau_xy_nn
 
     # ------------------------------------------------------------------
     # Helper: Amor volumetric-deviatoric energy split + degraded stress
@@ -113,7 +123,8 @@ class PFPhysicsEvaluator(nn.Module):
     # ------------------------------------------------------------------
     def compute_u_loss(self, pts_nd, bc_dict_nd, v_max_nd, w_pde, w_bc,
                        crack_face_nd=None, w_crack_face=10.0,
-                       sym_axis_nd=None, w_sym=50.0):
+                       sym_axis_nd=None, w_sym=50.0,
+                       w_equil=1.0, w_const=1.0):
         """
         pts_nd         : (N, 2) domain collocation points in non-dim coords (right half: x≥0)
         bc_dict_nd     : dict of non-dim BC point tensors
@@ -122,24 +133,32 @@ class PFPhysicsEvaluator(nn.Module):
         sym_axis_nd    : (M, 2) points on x=0 for symmetry BC: u=0, τ_xy=0
         w_sym          : weight for symmetry axis penalty (high: hard constraint)
         """
-        eps_xx, eps_yy, eps_xy, x_y_nd, _, _ = self.compute_strains(pts_nd)
+        eps_xx, eps_yy, eps_xy, x_y_nd, _, _, sig_xx_nn, sig_yy_nn, tau_xy_nn = self.compute_strains(pts_nd)
         phi = self.phi_net(x_y_nd).detach()
 
-        _, sig_xx, sig_yy, tau_xy = self.compute_energy_and_stress(
+        _, sig_xx_true, sig_yy_true, tau_xy_true = self.compute_energy_and_stress(
             eps_xx, eps_yy, eps_xy, phi)
 
+        # 1. Equilibrium Equation (1st-order derivatives on NN stress)
         dsig_xx_dx = torch.autograd.grad(
-            sig_xx.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
+            sig_xx_nn.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
         dtau_xy_dy = torch.autograd.grad(
-            tau_xy.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
+            tau_xy_nn.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
         dtau_xy_dx = torch.autograd.grad(
-            tau_xy.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
+            tau_xy_nn.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
         dsig_yy_dy = torch.autograd.grad(
-            sig_yy.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
+            sig_yy_nn.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
 
         res_x = dsig_xx_dx + dtau_xy_dy
         res_y = dtau_xy_dx + dsig_yy_dy
-        loss_pde = torch.mean(res_x**2 + res_y**2)
+        loss_equil = torch.mean(res_x**2 + res_y**2)
+
+        # 2. Constitutive Equation (NN stress vs true degraded stress)
+        loss_const = torch.mean((sig_xx_nn - sig_xx_true)**2 +
+                                (sig_yy_nn - sig_yy_true)**2 +
+                                (tau_xy_nn - tau_xy_true)**2)
+
+        loss_pde = w_equil * loss_equil + w_const * loss_const
 
         # ---- Dirichlet: top / bottom displacement ----
         pts_top = bc_dict_nd['top'].clone().requires_grad_(True)
@@ -152,9 +171,9 @@ class PFPhysicsEvaluator(nn.Module):
 
         # ---- Neumann: right free surface σ_xx = τ_xy = 0 ----
         pts_right = bc_dict_nd['right'].clone().requires_grad_(True)
-        ex_r, ey_r, exy_r, _, _, _ = self.compute_strains(pts_right)
-        phi_r = self.phi_net(pts_right).detach()
-        _, sxx_r, _, txy_r = self.compute_energy_and_stress(ex_r, ey_r, exy_r, phi_r)
+        out_right = self.u_net(pts_right)
+        sxx_r = out_right[:, 2:3]
+        txy_r = out_right[:, 4:5]
         loss_right = torch.mean(sxx_r**2 + txy_r**2)
 
         # ---- Rigid-body fix: u*(0, 0) = 0 ----
@@ -166,19 +185,18 @@ class PFPhysicsEvaluator(nn.Module):
         loss_sym = torch.tensor(0.0, device=pts_nd.device)
         if sym_axis_nd is not None and sym_axis_nd.numel() > 0:
             pts_sa = sym_axis_nd.clone().requires_grad_(True)
-            ex_s, ey_s, exy_s, _, u_s, _ = self.compute_strains(pts_sa)
-            phi_s = self.phi_net(pts_sa).detach()
-            _, _, _, txy_s = self.compute_energy_and_stress(ex_s, ey_s, exy_s, phi_s)
+            out_sa = self.u_net(pts_sa)
+            u_s = out_sa[:, 0:1]
+            txy_s = out_sa[:, 4:5]
             loss_sym = torch.mean(u_s**2 + txy_s**2)
 
         # ---- Crack-face traction-free: σ_yy = τ_xy = 0 ----
         loss_crack_face = torch.tensor(0.0, device=pts_nd.device)
         if crack_face_nd is not None and crack_face_nd.numel() > 0:
             pts_cf = crack_face_nd.clone().requires_grad_(True)
-            ex_cf, ey_cf, exy_cf, _, _, _ = self.compute_strains(pts_cf)
-            phi_cf = self.phi_net(pts_cf).detach()
-            _, _, syy_cf, txy_cf = self.compute_energy_and_stress(
-                ex_cf, ey_cf, exy_cf, phi_cf)
+            out_cf = self.u_net(pts_cf)
+            syy_cf = out_cf[:, 3:4]
+            txy_cf = out_cf[:, 4:5]
             loss_crack_face = torch.mean(syy_cf**2 + txy_cf**2)
 
         loss_bc = (loss_top + loss_bot + loss_center
@@ -187,7 +205,7 @@ class PFPhysicsEvaluator(nn.Module):
                    + w_crack_face * loss_crack_face)
 
         total_loss = w_pde * loss_pde + w_bc * loss_bc
-        return total_loss, loss_pde.item(), loss_bc.item(), loss_crack_face.item(), loss_sym.item()
+        return total_loss, loss_equil.item(), loss_const.item(), loss_bc.item(), loss_crack_face.item(), loss_sym.item()
 
     # ------------------------------------------------------------------
     # Loss 2: PhaseFieldNet loss (DisplacementNet is frozen)
