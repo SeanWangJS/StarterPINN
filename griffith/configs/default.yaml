@@ -1,0 +1,37 @@
+train:
+  domain_points: 10000
+  bc_points: 800
+  crack_points: 800      # Points on the initial crack to set H0
+  crack_face_points: 400 # Points on the crack faces for traction-free BC
+  num_steps: 10          # Number of quasi-static loading steps
+  am_iters: 5            # Alternating minimization iterations per step
+  v_max: 0.003           # Max displacement load at the top/bottom boundary
+  
+  # Optimizer settings for each AM step
+  u_lr: 0.001
+  u_steps: 2000
+  phi_lr: 0.001
+  phi_steps: 2000
+
+model:
+  in_dim: 2
+  u_out_dim: 2
+  phi_out_dim: 1
+  hidden_layers: 4
+  hidden_neurons: 64
+
+physics:
+  W: 1.0
+  H: 1.0
+  a: 0.1
+  E: 210000.0            # MPa (N/mm^2)
+  nu: 0.3
+  G_c: 2.7               # N/mm (or MPa * mm)  <- Fixed from 0.0027 kN/mm to match MPa
+  l_0: 0.01              # mm
+  k: 1.0e-5              # Residual stiffness
+
+weighting:
+  w_pde_u: 1.0
+  w_bc_u: 100.0          # Stiff penalty for Dirichlet boundary
+  w_crack_face: 20.0     # Penalty for crack-face traction-free condition
+  w_pde_phi: 1.0
