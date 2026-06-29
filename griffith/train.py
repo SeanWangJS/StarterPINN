@@ -53,34 +53,36 @@ def main():
     ).to(device)
 
     # ------------------------------------------------------------------ #
-    # Geometry sampler  –  generate points in PHYSICAL space,
-    # then convert to non-dimensional before feeding the network.
+    # Geometry sampler  –  RIGHT HALF DOMAIN: x ∈ [0, W/2]
     # ------------------------------------------------------------------ #
     sampler = GriffithGeometrySampler(W=W, H=H, a=a_phys, device=device)
 
     tc = cfg['train']
-    pts_phys = sampler.sample_fixed_domain(tc['domain_points'], l_0=l_0)
-    bc_dict_phys = sampler.sample_boundaries(tc['bc_points'])
-    pts_crack_phys = sampler.get_initial_crack_points(tc['crack_points'])
-    pts_crack_face_phys = sampler.sample_crack_face(tc['crack_face_points'])  # physical coords
+    # Domain points in physical space (right half)
+    pts_phys            = sampler.sample_fixed_domain(tc['domain_points'], l_0=l_0)
+    bc_dict_phys        = sampler.sample_boundaries(tc['bc_points'])
+    pts_crack_phys      = sampler.get_initial_crack_points(tc['crack_points'])
+    pts_crack_face_phys = sampler.sample_crack_face(tc['crack_face_points'])
+    pts_sym_axis_phys   = sampler.sample_symmetry_axis(tc['sym_axis_points'])
 
-    # Concatenate crack points into domain (needed for H0 pre-conditioning)
+    # Append crack seed points to domain for history field
     pts_phys = torch.cat([pts_phys, pts_crack_phys], dim=0)
-    N_total = pts_phys.shape[0]
-    N_crack = tc['crack_points']
+    N_total  = pts_phys.shape[0]
+    N_crack  = tc['crack_points']
 
-    # Convert everything to non-dimensional coords  (x* = x / L0)
-    pts_nd = pts_phys / L0
-    bc_dict_nd = {k: v / L0 for k, v in bc_dict_phys.items()}
-    crack_face_nd = pts_crack_face_phys / L0
+    # Convert to non-dimensional coords  (x* = x / L0)
+    pts_nd           = pts_phys / L0
+    bc_dict_nd       = {k: v / L0 for k, v in bc_dict_phys.items()}
+    crack_face_nd    = pts_crack_face_phys / L0
+    sym_axis_nd      = pts_sym_axis_phys / L0
 
     # ------------------------------------------------------------------ #
-    # History field  H*  (non-dimensional: stored as H / H0)
+    # History field  H*  (non-dimensional, right half only)
     # ------------------------------------------------------------------ #
     history_H_nd = torch.zeros((N_total, 1), dtype=torch.float32, device=device)
 
-    # Pre-condition initial crack with H* → ∞ (use a large dimensionless value)
-    large_H_nd = 1000.0   # H* >> 1  drives phi → 1 at crack points
+    # Pre-condition crack with H* >> 1 to drive phi → 1 there
+    large_H_nd = 500.0
     history_H_nd[-N_crack:, 0] = large_H_nd
 
     # ------------------------------------------------------------------ #
@@ -96,9 +98,11 @@ def main():
     print(f"TensorBoard logs: {log_dir}")
 
     wc = cfg['weighting']
-    w_pde_u   = wc['w_pde_u']
-    w_bc_u    = wc['w_bc_u']
-    w_pde_phi = wc['w_pde_phi']
+    w_pde_u    = wc['w_pde_u']
+    w_bc_u     = wc['w_bc_u']
+    w_crack    = wc['w_crack_face']
+    w_sym      = wc['w_sym']
+    w_pde_phi  = wc['w_pde_phi']
 
     global_step = 0
 
@@ -106,59 +110,56 @@ def main():
     # Quasi-static loading loop
     # ------------------------------------------------------------------ #
     for step in range(1, tc['num_steps'] + 1):
-        # Non-dimensional displacement load for this step
         v_max_phys = tc['v_max'] * (step / tc['num_steps'])
-        v_max_nd   = v_max_phys / L0      # v* = v / L0   (O(1) for typical loads)
+        v_max_nd   = v_max_phys / L0
 
         print(f"\n=== Load Step {step}/{tc['num_steps']} "
               f"| v_max = {v_max_phys:.6f} mm  ({v_max_nd:.4f} non-dim) ===")
 
         # --------------------------------------------------------------
-        # Alternating Minimization  (Staggered Training)
+        # Alternating Minimization
         # --------------------------------------------------------------
         for am in range(tc['am_iters']):
             print(f"  -- AM Iteration {am+1}/{tc['am_iters']} --")
 
-            # ---- 1. Train DisplacementNet (freeze PhaseFieldNet) ------
+            # ---- 1. Train DisplacementNet ----
             u_net.train()
             phi_net.eval()
 
             pbar_u = tqdm(range(tc['u_steps']), desc="Train U", leave=False)
             for _ in pbar_u:
                 opt_u.zero_grad()
-                loss_u, pde_u, bc_u, crack_face_u = evaluator.compute_u_loss(
+                loss_u, pde_u, bc_u, cf_u, sym_u = evaluator.compute_u_loss(
                     pts_nd, bc_dict_nd, v_max_nd, w_pde_u, w_bc_u,
-                    crack_face_nd=crack_face_nd,
-                    w_crack_face=wc['w_crack_face']
+                    crack_face_nd=crack_face_nd, w_crack_face=w_crack,
+                    sym_axis_nd=sym_axis_nd,    w_sym=w_sym,
                 )
                 loss_u.backward()
                 opt_u.step()
 
-                writer.add_scalar('Loss/U_Total',      loss_u.item(), global_step)
-                writer.add_scalar('Loss/U_PDE',        pde_u,         global_step)
-                writer.add_scalar('Loss/U_BC',         bc_u,          global_step)
-                writer.add_scalar('Loss/U_CrackFace',  crack_face_u,  global_step)
-                pbar_u.set_postfix({'PDE': f'{pde_u:.2e}', 'BC': f'{bc_u:.2e}', 'CF': f'{crack_face_u:.2e}'})
+                writer.add_scalar('Loss/U_Total',     loss_u.item(), global_step)
+                writer.add_scalar('Loss/U_PDE',       pde_u,         global_step)
+                writer.add_scalar('Loss/U_BC',        bc_u,          global_step)
+                writer.add_scalar('Loss/U_CrackFace', cf_u,          global_step)
+                writer.add_scalar('Loss/U_Sym',       sym_u,         global_step)
+                pbar_u.set_postfix({'PDE': f'{pde_u:.2e}', 'Sym': f'{sym_u:.2e}', 'CF': f'{cf_u:.2e}'})
                 global_step += 1
 
-            # ---- 2. Update history field H*  -------------------------
+            # ---- 2. Update History Field H* ----
             u_net.eval()
             with torch.set_grad_enabled(True):
-                pts_nd_grad = pts_nd.clone().requires_grad_(True)
-                eps_xx, eps_yy, eps_xy, _, _, _ = evaluator.compute_strains(pts_nd_grad)
+                pts_nd_g = pts_nd.clone().requires_grad_(True)
+                eps_xx, eps_yy, eps_xy, _, _, _ = evaluator.compute_strains(pts_nd_g)
                 phi_dummy = torch.zeros_like(eps_xx)
                 psi_nd, _, _, _ = evaluator.compute_energy_and_stress(
                     eps_xx, eps_yy, eps_xy, phi_dummy
                 )
-                # psi_nd is psi_e+ / E0; convert to H*:  H* = psi_nd * E0 / H0
                 H_nd_new = psi_nd.detach() * (E / H0)
 
-            # Irreversibility: H* = max(H*_old, H*_new)
             history_H_nd = torch.maximum(history_H_nd, H_nd_new)
-            # Restore crack pre-conditioning
-            history_H_nd[-N_crack:, 0] = large_H_nd
+            history_H_nd[-N_crack:, 0] = large_H_nd   # restore crack pre-conditioning
 
-            # ---- 3. Train PhaseFieldNet (freeze DisplacementNet) ------
+            # ---- 3. Train PhaseFieldNet ----
             phi_net.train()
 
             pbar_phi = tqdm(range(tc['phi_steps']), desc="Train Phi", leave=False)
@@ -185,9 +186,8 @@ def main():
     torch.save({
         'u_net':   u_net.state_dict(),
         'phi_net': phi_net.state_dict(),
-        # Also save the reference scales so post-processing scripts can reconstruct
-        # physical quantities: u_phys = u_nd * L0, sig_phys = sig_nd * E0
-        'scales': {'L0': L0, 'E0': E, 'H0': H0}
+        'scales':  {'L0': L0, 'E0': E, 'H0': H0},
+        'domain':  'right_half',   # flag for post-processing
     }, os.path.join(save_dir, 'griffith_pf_model.pth'))
 
     print("Model saved successfully.")

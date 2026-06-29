@@ -112,22 +112,22 @@ class PFPhysicsEvaluator(nn.Module):
     # Loss 1: DisplacementNet loss (PhaseFieldNet is frozen / detached)
     # ------------------------------------------------------------------
     def compute_u_loss(self, pts_nd, bc_dict_nd, v_max_nd, w_pde, w_bc,
-                       crack_face_nd=None, w_crack_face=10.0):
+                       crack_face_nd=None, w_crack_face=10.0,
+                       sym_axis_nd=None, w_sym=50.0):
         """
-        pts_nd         : (N, 2) domain collocation points in non-dim coords
+        pts_nd         : (N, 2) domain collocation points in non-dim coords (right half: x≥0)
         bc_dict_nd     : dict of non-dim BC point tensors
-        v_max_nd       : v_bar* = v_bar / L0  (non-dimensional target displacement)
-        crack_face_nd  : (M, 2) non-dim coords of crack-face points (y ≈ ±ε, |x|<a)
-                         If provided, enforces σ_yy = τ_xy = 0 explicitly.
-        w_crack_face   : weight for the crack-face traction-free penalty
+        v_max_nd       : v_bar* = v_bar / L0
+        crack_face_nd  : crack-face points for σ_yy = τ_xy = 0
+        sym_axis_nd    : (M, 2) points on x=0 for symmetry BC: u=0, τ_xy=0
+        w_sym          : weight for symmetry axis penalty (high: hard constraint)
         """
         eps_xx, eps_yy, eps_xy, x_y_nd, _, _ = self.compute_strains(pts_nd)
-        phi = self.phi_net(x_y_nd).detach()   # freeze phi network
+        phi = self.phi_net(x_y_nd).detach()
 
         _, sig_xx, sig_yy, tau_xy = self.compute_energy_and_stress(
             eps_xx, eps_yy, eps_xy, phi)
 
-        # Equilibrium PDE residuals  div(sigma*) = 0  (non-dimensional)
         dsig_xx_dx = torch.autograd.grad(
             sig_xx.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
         dtau_xy_dy = torch.autograd.grad(
@@ -139,37 +139,39 @@ class PFPhysicsEvaluator(nn.Module):
 
         res_x = dsig_xx_dx + dtau_xy_dy
         res_y = dtau_xy_dx + dsig_yy_dy
-
         loss_pde = torch.mean(res_x**2 + res_y**2)
 
-        # ---- Dirichlet BC: top / bottom displacement ----
+        # ---- Dirichlet: top / bottom displacement ----
         pts_top = bc_dict_nd['top'].clone().requires_grad_(True)
-        uv_top = self.u_net(pts_top)
+        uv_top  = self.u_net(pts_top)
         loss_top = torch.mean((uv_top[:, 1:2] - v_max_nd)**2)
 
         pts_bot = bc_dict_nd['bottom'].clone().requires_grad_(True)
-        uv_bot = self.u_net(pts_bot)
+        uv_bot  = self.u_net(pts_bot)
         loss_bot = torch.mean((uv_bot[:, 1:2] + v_max_nd)**2)
 
-        # ---- Traction-free: left / right sides  (sig_xx = tau_xy = 0) ----
-        pts_left = bc_dict_nd['left'].clone().requires_grad_(True)
-        ex_l, ey_l, exy_l, _, _, _ = self.compute_strains(pts_left)
-        phi_l = self.phi_net(pts_left).detach()
-        _, sxx_l, _, txy_l = self.compute_energy_and_stress(ex_l, ey_l, exy_l, phi_l)
-        loss_sides = torch.mean(sxx_l**2 + txy_l**2)
-
+        # ---- Neumann: right free surface σ_xx = τ_xy = 0 ----
         pts_right = bc_dict_nd['right'].clone().requires_grad_(True)
         ex_r, ey_r, exy_r, _, _, _ = self.compute_strains(pts_right)
         phi_r = self.phi_net(pts_right).detach()
         _, sxx_r, _, txy_r = self.compute_energy_and_stress(ex_r, ey_r, exy_r, phi_r)
-        loss_sides = loss_sides + torch.mean(sxx_r**2 + txy_r**2)
+        loss_right = torch.mean(sxx_r**2 + txy_r**2)
 
         # ---- Rigid-body fix: u*(0, 0) = 0 ----
         pts_c = bc_dict_nd['center']
-        uv_c = self.u_net(pts_c)
+        uv_c  = self.u_net(pts_c)
         loss_center = torch.mean(uv_c[:, 0:1]**2)
 
-        # ---- Crack-face traction-free: σ_yy = τ_xy = 0 on y=0, |x|<a ----
+        # ---- Symmetry axis x=0: u=0, τ_xy=0 ----
+        loss_sym = torch.tensor(0.0, device=pts_nd.device)
+        if sym_axis_nd is not None and sym_axis_nd.numel() > 0:
+            pts_sa = sym_axis_nd.clone().requires_grad_(True)
+            ex_s, ey_s, exy_s, _, u_s, _ = self.compute_strains(pts_sa)
+            phi_s = self.phi_net(pts_sa).detach()
+            _, _, _, txy_s = self.compute_energy_and_stress(ex_s, ey_s, exy_s, phi_s)
+            loss_sym = torch.mean(u_s**2 + txy_s**2)
+
+        # ---- Crack-face traction-free: σ_yy = τ_xy = 0 ----
         loss_crack_face = torch.tensor(0.0, device=pts_nd.device)
         if crack_face_nd is not None and crack_face_nd.numel() > 0:
             pts_cf = crack_face_nd.clone().requires_grad_(True)
@@ -180,12 +182,12 @@ class PFPhysicsEvaluator(nn.Module):
             loss_crack_face = torch.mean(syy_cf**2 + txy_cf**2)
 
         loss_bc = (loss_top + loss_bot + loss_center
-                   + 0.1 * loss_sides
+                   + 0.1 * loss_right
+                   + w_sym * loss_sym
                    + w_crack_face * loss_crack_face)
 
         total_loss = w_pde * loss_pde + w_bc * loss_bc
-
-        return total_loss, loss_pde.item(), loss_bc.item(), loss_crack_face.item()
+        return total_loss, loss_pde.item(), loss_bc.item(), loss_crack_face.item(), loss_sym.item()
 
     # ------------------------------------------------------------------
     # Loss 2: PhaseFieldNet loss (DisplacementNet is frozen)
