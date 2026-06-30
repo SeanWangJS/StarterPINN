@@ -1,16 +1,16 @@
 train:
   domain_points: 50000
-  bc_points: 800
-  crack_points: 800
-  crack_face_points: 400
-  sym_axis_points: 600   # Points on x=0 for symmetry BC
+  bc_points: 1600
+  crack_points: 1600
+  crack_face_points: 800
+  sym_axis_points: 1200   # Points on x=0 for symmetry BC
   num_steps: 10
   am_iters: 5
   v_max: 0.003
   u_lr: 0.001
-  u_steps: 2000
-  phi_lr: 0.001
-  phi_steps: 2000
+  u_steps: 800
+  phi_lr: 0.0015
+  phi_steps: 800
 
 model:
   u_in_dim: 4            # [x, y, mu, nu]
