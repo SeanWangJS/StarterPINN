@@ -1,5 +1,5 @@
 train:
-  domain_points: 10000
+  domain_points: 50000
   bc_points: 800
   crack_points: 800
   crack_face_points: 400
