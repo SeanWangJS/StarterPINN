@@ -1,6 +1,32 @@
 import torch
 import torch.nn as nn
 
+def cartesian_to_elliptic(pts_nd, a_nd):
+    """
+    pts_nd: (N, 2) tensor of non-dimensional coordinates (x*, y*)
+    a_nd: non-dimensional crack half-length (which is 1.0 since L0 = a)
+    Returns: mu, nu tensors of shape (N, 1)
+    """
+    x = pts_nd[:, 0:1]
+    y = pts_nd[:, 1:2]
+    
+    # 物理启发：将坐标系在一个假想的 z 轴上偏移极小量 sqrt(eps)
+    # 这从几何上保证了点永远不会"正好"落在奇异线上，从而让
+    # acosh(1.0) 和 acos(+-1.0) 对应的无穷大导数被完美截断（不再出现 NaN）
+    eps = 1e-4  
+    
+    L1 = torch.sqrt((x + a_nd)**2 + y**2 + eps)
+    L2 = torch.sqrt((x - a_nd)**2 + y**2 + eps)
+    
+    # 因为存在 eps 补偿，这里几何上保证了 val_mu 严格 > 1.0，val_nu 严格在 (-1, 1) 内
+    val_mu = (L1 + L2) / (2.0 * a_nd)
+    val_nu = (L1 - L2) / (2.0 * a_nd)
+    
+    mu = torch.acosh(val_mu)
+    nu = torch.acos(val_nu)
+    
+    return mu, nu
+
 
 class PFPhysicsEvaluator(nn.Module):
     """
@@ -53,22 +79,24 @@ class PFPhysicsEvaluator(nn.Module):
         """
         pts_nd : (N, 2) tensor of NON-DIMENSIONAL coordinates (x*, y*)
         Returns eps_xx, eps_yy, eps_xy (all dimensionless),
-                plus pts_nd (with grad), u*, v*, and NN predicted stresses
+                plus pts_nd (with grad), u*, v*, and NN predicted stresses (None for Standard PINN)
         """
         pts_nd = pts_nd.clone().requires_grad_(True)
-        out_nd = self.u_net(pts_nd)          # network outputs u*, v*, sig_xx*, sig_yy*, tau_xy*
+        
+        # Elliptic mapping (a_nd = 1.0 since we scaled by L0=a)
+        mu, nu = cartesian_to_elliptic(pts_nd, 1.0)
+        
+        # Input to DisplacementNet is [x, y, mu, nu]
+        u_in = torch.cat([pts_nd, mu, nu], dim=1)
+        
+        out_nd = self.u_net(u_in)          # network outputs u*, v*
         u_nd = out_nd[:, 0:1]
         v_nd = out_nd[:, 1:2]
         
-        # Extract NN stresses if using Mixed-PINN (5 outputs)
-        if out_nd.shape[1] == 5:
-            sig_xx_nn = out_nd[:, 2:3]
-            sig_yy_nn = out_nd[:, 3:4]
-            tau_xy_nn = out_nd[:, 4:5]
-        else:
-            sig_xx_nn = None
-            sig_yy_nn = None
-            tau_xy_nn = None
+        # Standard PINN has no stress output
+        sig_xx_nn = None
+        sig_yy_nn = None
+        tau_xy_nn = None
 
         grad_u = torch.autograd.grad(
             u_nd.sum(), pts_nd, create_graph=True)[0]
@@ -123,8 +151,7 @@ class PFPhysicsEvaluator(nn.Module):
     # ------------------------------------------------------------------
     def compute_u_loss(self, pts_nd, bc_dict_nd, v_max_nd, w_pde, w_bc,
                        crack_face_nd=None, w_crack_face=10.0,
-                       sym_axis_nd=None, w_sym=50.0,
-                       w_equil=1.0, w_const=1.0):
+                       sym_axis_nd=None, w_sym=50.0):
         """
         pts_nd         : (N, 2) domain collocation points in non-dim coords (right half: x≥0)
         bc_dict_nd     : dict of non-dim BC point tensors
@@ -133,70 +160,71 @@ class PFPhysicsEvaluator(nn.Module):
         sym_axis_nd    : (M, 2) points on x=0 for symmetry BC: u=0, τ_xy=0
         w_sym          : weight for symmetry axis penalty (high: hard constraint)
         """
-        eps_xx, eps_yy, eps_xy, x_y_nd, _, _, sig_xx_nn, sig_yy_nn, tau_xy_nn = self.compute_strains(pts_nd)
+        eps_xx, eps_yy, eps_xy, x_y_nd, _, _, _, _, _ = self.compute_strains(pts_nd)
         phi = self.phi_net(x_y_nd).detach()
 
-        _, sig_xx_true, sig_yy_true, tau_xy_true = self.compute_energy_and_stress(
+        _, sig_xx, sig_yy, tau_xy = self.compute_energy_and_stress(
             eps_xx, eps_yy, eps_xy, phi)
 
-        # 1. Equilibrium Equation (1st-order derivatives on NN stress)
+        # 1. Equilibrium Equation (2nd-order derivatives on NN displacement)
         dsig_xx_dx = torch.autograd.grad(
-            sig_xx_nn.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
+            sig_xx.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
         dtau_xy_dy = torch.autograd.grad(
-            tau_xy_nn.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
+            tau_xy.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
         dtau_xy_dx = torch.autograd.grad(
-            tau_xy_nn.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
+            tau_xy.sum(), x_y_nd, create_graph=True)[0][:, 0:1]
         dsig_yy_dy = torch.autograd.grad(
-            sig_yy_nn.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
+            sig_yy.sum(), x_y_nd, create_graph=True)[0][:, 1:2]
 
         res_x = dsig_xx_dx + dtau_xy_dy
         res_y = dtau_xy_dx + dsig_yy_dy
         loss_equil = torch.mean(res_x**2 + res_y**2)
 
-        # 2. Constitutive Equation (NN stress vs true degraded stress)
-        loss_const = torch.mean((sig_xx_nn - sig_xx_true)**2 +
-                                (sig_yy_nn - sig_yy_true)**2 +
-                                (tau_xy_nn - tau_xy_true)**2)
-
-        loss_pde = w_equil * loss_equil + w_const * loss_const
+        loss_pde = w_pde * loss_equil
+        
+        def eval_u(pts):
+            mu, nu = cartesian_to_elliptic(pts, 1.0)
+            u_in = torch.cat([pts, mu, nu], dim=1)
+            return self.u_net(u_in)
 
         # ---- Dirichlet: top / bottom displacement ----
         pts_top = bc_dict_nd['top'].clone().requires_grad_(True)
-        uv_top  = self.u_net(pts_top)
+        uv_top  = eval_u(pts_top)
         loss_top = torch.mean((uv_top[:, 1:2] - v_max_nd)**2)
 
         pts_bot = bc_dict_nd['bottom'].clone().requires_grad_(True)
-        uv_bot  = self.u_net(pts_bot)
+        uv_bot  = eval_u(pts_bot)
         loss_bot = torch.mean((uv_bot[:, 1:2] + v_max_nd)**2)
 
         # ---- Neumann: right free surface σ_xx = τ_xy = 0 ----
         pts_right = bc_dict_nd['right'].clone().requires_grad_(True)
-        out_right = self.u_net(pts_right)
-        sxx_r = out_right[:, 2:3]
-        txy_r = out_right[:, 4:5]
+        eps_xx_r, eps_yy_r, eps_xy_r, _, _, _, _, _, _ = self.compute_strains(pts_right)
+        phi_r = self.phi_net(pts_right).detach()
+        _, sxx_r, _, txy_r = self.compute_energy_and_stress(eps_xx_r, eps_yy_r, eps_xy_r, phi_r)
         loss_right = torch.mean(sxx_r**2 + txy_r**2)
 
         # ---- Rigid-body fix: u*(0, 0) = 0 ----
         pts_c = bc_dict_nd['center']
-        uv_c  = self.u_net(pts_c)
+        uv_c  = eval_u(pts_c)
         loss_center = torch.mean(uv_c[:, 0:1]**2)
 
         # ---- Symmetry axis x=0: u=0, τ_xy=0 ----
         loss_sym = torch.tensor(0.0, device=pts_nd.device)
         if sym_axis_nd is not None and sym_axis_nd.numel() > 0:
             pts_sa = sym_axis_nd.clone().requires_grad_(True)
-            out_sa = self.u_net(pts_sa)
-            u_s = out_sa[:, 0:1]
-            txy_s = out_sa[:, 4:5]
-            loss_sym = torch.mean(u_s**2 + txy_s**2)
+            # Need τ_xy, so we must compute strains
+            eps_xx_sa, eps_yy_sa, eps_xy_sa, _, u_sa, _, _, _, _ = self.compute_strains(pts_sa)
+            phi_sa = self.phi_net(pts_sa).detach()
+            _, _, _, txy_sa = self.compute_energy_and_stress(eps_xx_sa, eps_yy_sa, eps_xy_sa, phi_sa)
+            loss_sym = torch.mean(u_sa**2 + txy_sa**2)
 
         # ---- Crack-face traction-free: σ_yy = τ_xy = 0 ----
         loss_crack_face = torch.tensor(0.0, device=pts_nd.device)
         if crack_face_nd is not None and crack_face_nd.numel() > 0:
             pts_cf = crack_face_nd.clone().requires_grad_(True)
-            out_cf = self.u_net(pts_cf)
-            syy_cf = out_cf[:, 3:4]
-            txy_cf = out_cf[:, 4:5]
+            eps_xx_cf, eps_yy_cf, eps_xy_cf, _, _, _, _, _, _ = self.compute_strains(pts_cf)
+            phi_cf = self.phi_net(pts_cf).detach()
+            _, _, syy_cf, txy_cf = self.compute_energy_and_stress(eps_xx_cf, eps_yy_cf, eps_xy_cf, phi_cf)
             loss_crack_face = torch.mean(syy_cf**2 + txy_cf**2)
 
         loss_bc = (loss_top + loss_bot + loss_center
@@ -204,8 +232,8 @@ class PFPhysicsEvaluator(nn.Module):
                    + w_sym * loss_sym
                    + w_crack_face * loss_crack_face)
 
-        total_loss = w_pde * loss_pde + w_bc * loss_bc
-        return total_loss, loss_equil.item(), loss_const.item(), loss_bc.item(), loss_crack_face.item(), loss_sym.item()
+        total_loss = loss_pde + w_bc * loss_bc
+        return total_loss, loss_equil.item(), loss_bc.item(), loss_crack_face.item(), loss_sym.item()
 
     # ------------------------------------------------------------------
     # Loss 2: PhaseFieldNet loss (DisplacementNet is frozen)

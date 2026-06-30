@@ -53,11 +53,11 @@ def plot_final_results():
 
     mc = cfg['model']
     u_net = DisplacementNet(
-        in_dim=mc['in_dim'], out_dim=mc['u_out_dim'],
+        in_dim=mc['u_in_dim'], out_dim=mc['u_out_dim'],
         hidden_layers=mc['hidden_layers'], hidden_neurons=mc['hidden_neurons']
     ).to(device)
     phi_net = PhaseFieldNet(
-        in_dim=mc['in_dim'], out_dim=mc['phi_out_dim'],
+        in_dim=mc['phi_in_dim'], out_dim=mc['phi_out_dim'],
         hidden_layers=mc['hidden_layers'], hidden_neurons=mc['hidden_neurons']
     ).to(device)
 
@@ -94,8 +94,9 @@ def plot_final_results():
             phys['E'], phys['nu'], phys['G_c'], phys['l_0'], a_phys, phys['k']
         ).to(device)
 
-        _, _, _, _, u_nd, v_nd, _, sig_yy_nd, _ = evaluator.compute_strains(pts_nd)
+        eps_xx, eps_yy, eps_xy, _, u_nd, v_nd, _, _, _ = evaluator.compute_strains(pts_nd)
         phi = phi_net(pts_nd)
+        _, _, sig_yy_nd, _ = evaluator.compute_energy_and_stress(eps_xx, eps_yy, eps_xy, phi)
 
     ny, nx_half = X_half.shape
     U_half   = (u_nd.detach().cpu().numpy().reshape(ny, nx_half)) * L0

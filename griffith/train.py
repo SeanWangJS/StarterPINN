@@ -35,12 +35,12 @@ def main():
     # ------------------------------------------------------------------ #
     mc = cfg['model']
     u_net = DisplacementNet(
-        in_dim=mc['in_dim'], out_dim=mc['u_out_dim'],
+        in_dim=mc['u_in_dim'], out_dim=mc['u_out_dim'],
         hidden_layers=mc['hidden_layers'], hidden_neurons=mc['hidden_neurons']
     ).to(device)
 
     phi_net = PhaseFieldNet(
-        in_dim=mc['in_dim'], out_dim=mc['phi_out_dim'],
+        in_dim=mc['phi_in_dim'], out_dim=mc['phi_out_dim'],
         hidden_layers=mc['hidden_layers'], hidden_neurons=mc['hidden_neurons']
     ).to(device)
 
@@ -99,8 +99,6 @@ def main():
 
     wc = cfg['weighting']
     w_pde_u    = wc['w_pde_u']
-    w_equil    = wc.get('w_equil', 1.0)
-    w_const    = wc.get('w_const', 1.0)
     w_bc_u     = wc['w_bc_u']
     w_crack    = wc['w_crack_face']
     w_sym      = wc['w_sym']
@@ -131,22 +129,20 @@ def main():
             pbar_u = tqdm(range(tc['u_steps']), desc="Train U", leave=False)
             for _ in pbar_u:
                 opt_u.zero_grad()
-                loss_u, loss_equil, loss_const, bc_u, cf_u, sym_u = evaluator.compute_u_loss(
+                loss_u, loss_equil, bc_u, cf_u, sym_u = evaluator.compute_u_loss(
                     pts_nd, bc_dict_nd, v_max_nd, w_pde_u, w_bc_u,
                     crack_face_nd=crack_face_nd, w_crack_face=w_crack,
-                    sym_axis_nd=sym_axis_nd,    w_sym=w_sym,
-                    w_equil=w_equil, w_const=w_const
+                    sym_axis_nd=sym_axis_nd,    w_sym=w_sym
                 )
                 loss_u.backward()
                 opt_u.step()
 
                 writer.add_scalar('Loss/U_Total',     loss_u.item(), global_step)
                 writer.add_scalar('Loss/U_Equil',     loss_equil,    global_step)
-                writer.add_scalar('Loss/U_Const',     loss_const,    global_step)
                 writer.add_scalar('Loss/U_BC',        bc_u,          global_step)
                 writer.add_scalar('Loss/U_CrackFace', cf_u,          global_step)
                 writer.add_scalar('Loss/U_Sym',       sym_u,         global_step)
-                pbar_u.set_postfix({'Eq': f'{loss_equil:.2e}', 'Co': f'{loss_const:.2e}', 'CF': f'{cf_u:.2e}'})
+                pbar_u.set_postfix({'Eq': f'{loss_equil:.2e}', 'CF': f'{cf_u:.2e}'})
                 global_step += 1
 
             # ---- 2. Update History Field H* ----
