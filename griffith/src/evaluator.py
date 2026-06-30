@@ -23,7 +23,19 @@ def cartesian_to_elliptic(pts_nd, a_nd):
     val_nu = (L1 - L2) / (2.0 * a_nd)
     
     mu = torch.acosh(val_mu)
-    nu = torch.acos(val_nu)
+    
+    # 恢复 Branch Cut (分支切割)！
+    # 如果仅使用 acos，nu 的范围始终在 [0, pi]，这意味着网络在 y>0 和 y<0 看到的输入完全一样，
+    # 导致网络强制输出在 y 轴对称的连续位移，裂纹永远无法“张开”！
+    # 我们必须使用 atan2(sin_nu, cos_nu) 来让 nu 具备方向性 [-pi, pi]。
+    y_sign = torch.sign(y)
+    # 对于恰好落在 y=0 的边界点，默认将其归入上裂纹面 (y_sign = 1)
+    y_sign = torch.where(y == 0.0, torch.ones_like(y_sign), y_sign)
+    
+    # sin(nu) 的大小为 sqrt(1 - cos^2(nu))，符号与 y_sign 相同
+    sin_nu = y_sign * torch.sqrt(torch.clamp(1.0 - val_nu**2, min=1e-8))
+    
+    nu = torch.atan2(sin_nu, val_nu)
     
     return mu, nu
 
