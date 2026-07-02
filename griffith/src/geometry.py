@@ -77,7 +77,7 @@ class GriffithGeometrySampler:
         idx = np.random.permutation(pts.shape[0])
         pts = pts[idx]
 
-        return torch.tensor(pts, dtype=torch.float32, device=self.device)
+        return torch.tensor(pts, dtype=torch.get_default_dtype(), device=self.device)
 
     # ------------------------------------------------------------------
     # Initial crack seed points  (right half: x ∈ [0, a])
@@ -89,7 +89,7 @@ class GriffithGeometrySampler:
         """
         x = np.random.uniform(0.0, self.a, (num_points, 1))
         y = np.zeros((num_points, 1))
-        pts = torch.tensor(np.hstack([x, y]), dtype=torch.float32, device=self.device)
+        pts = torch.tensor(np.hstack([x, y]), dtype=torch.get_default_dtype(), device=self.device)
         return pts
 
     # ------------------------------------------------------------------
@@ -105,7 +105,7 @@ class GriffithGeometrySampler:
         pts_up = np.hstack([x, np.full((n_half, 1), +offset)])
         pts_dn = np.hstack([x, np.full((n_half, 1), -offset)])
         pts = np.vstack([pts_up, pts_dn])
-        return torch.tensor(pts, dtype=torch.float32, device=self.device)
+        return torch.tensor(pts, dtype=torch.get_default_dtype(), device=self.device)
 
     # ------------------------------------------------------------------
     # Symmetry axis points  x = 0,  y ∈ [-H/2, H/2]
@@ -118,7 +118,7 @@ class GriffithGeometrySampler:
         """
         x = np.zeros((num_points, 1))
         y = np.random.uniform(-self.H/2, self.H/2, (num_points, 1))
-        pts = torch.tensor(np.hstack([x, y]), dtype=torch.float32, device=self.device)
+        pts = torch.tensor(np.hstack([x, y]), dtype=torch.get_default_dtype(), device=self.device)
         return pts
 
     # ------------------------------------------------------------------
@@ -135,12 +135,12 @@ class GriffithGeometrySampler:
 
         def _t(x_arr, y_arr):
             return torch.tensor(np.hstack([x_arr, y_arr]),
-                                dtype=torch.float32, device=self.device)
+                                dtype=torch.get_default_dtype(), device=self.device)
 
         top_pts   = _t(np.random.uniform(0.0, self.W/2, (n, 1)), np.full((n, 1), +self.H/2))
         bot_pts   = _t(np.random.uniform(0.0, self.W/2, (n, 1)), np.full((n, 1), -self.H/2))
         right_pts = _t(np.full((n, 1), self.W/2),  np.random.uniform(-self.H/2, self.H/2, (n, 1)))
-        center_pt = torch.tensor([[0.0, 0.0]], dtype=torch.float32, device=self.device)
+        center_pt = torch.tensor([[0.0, 0.0]], dtype=torch.get_default_dtype(), device=self.device)
 
         return {
             'top':    top_pts,

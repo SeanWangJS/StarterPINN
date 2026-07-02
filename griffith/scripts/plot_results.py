@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import yaml
 import sys
+import argparse
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -44,7 +45,7 @@ def reflect_to_full_field(X_half, Y, U_half, V_half, PHI_half):
     return X_full, Y_full, U_full, V_full, PHI_full
 
 
-def plot_final_results():
+def plot_final_results(elastic=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     config_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'default.yaml')
@@ -71,6 +72,12 @@ def plot_final_results():
     phi_net.load_state_dict(checkpoint['phi_net'])
     u_net.eval()
     phi_net.eval()
+
+    # In elastic diagnostic mode, override phi_net to return zeros everywhere
+    # so that g(phi) = 1 and the full undegraded stress field is visualised.
+    if elastic:
+        phi_net.forward = lambda x: torch.zeros(
+            x.shape[0], 1, dtype=torch.float32, device=x.device)
 
     phys  = cfg['physics']
     W, H  = phys['W'], phys['H']
@@ -129,7 +136,9 @@ def plot_final_results():
     axes[0, 0].set_aspect('equal'); fig.colorbar(im1, ax=axes[0, 0])
 
     im2 = axes[0, 1].pcolormesh(X_full, Y_full, PHI_full, cmap='hot_r', shading='auto', vmin=0, vmax=1)
-    axes[0, 1].set_title(r'Predicted Phase Field ($\phi$)')
+    phi_title = (r'Phase Field ($\phi \equiv 0$, elastic diagnostic)'
+                 if elastic else r'Predicted Phase Field ($\phi$)')
+    axes[0, 1].set_title(phi_title)
     axes[0, 1].set_aspect('equal'); fig.colorbar(im2, ax=axes[0, 1])
 
     # Use the theoretical stress range for both plots to allow direct comparison
@@ -146,11 +155,16 @@ def plot_final_results():
 
     out_dir = os.path.join(os.path.dirname(__file__), '..', 'results', 'figures')
     os.makedirs(out_dir, exist_ok=True)
-    save_path = os.path.join(out_dir, 'final_prediction_with_stress.png')
+    fname     = 'elastic_diag_stress.png' if elastic else 'final_prediction_with_stress.png'
+    save_path = os.path.join(out_dir, fname)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     print(f"Saved to {save_path}")
 
 
 if __name__ == '__main__':
-    plot_final_results()
+    parser = argparse.ArgumentParser(description='Plot Griffith PINN results')
+    parser.add_argument('--elastic', action='store_true',
+                        help='Force phi=0 (elastic diagnostic mode, pairs with diag_mode in yaml)')
+    args = parser.parse_args()
+    plot_final_results(elastic=args.elastic)
