@@ -40,6 +40,43 @@ def cartesian_to_elliptic(pts_nd, a_nd):
     return mu, nu
 
 
+def williams_features(pts_nd, a_nd=1.0, n_modes=4, eps=1e-6):
+    """
+    Williams eigenfunction expansion features around the right crack tip (a_nd, 0).
+
+    Provides the network with the *shape* of the leading-order asymptotic
+    displacement modes without hard-coding their amplitude (K_I is still
+    inferred by the network from the PDE residual). See
+    docs/griffith-next-steps.md §步骤2 for the derivation.
+
+    pts_nd  : (N, 2) non-dimensional coordinates (x*, y*)
+    a_nd    : non-dimensional crack half-length (1.0 since L0 = a)
+    n_modes : number of leading modes to return (<= 4)
+    Returns : (N, n_modes) tensor
+    """
+    x = pts_nd[:, 0:1] - a_nd
+    y = pts_nd[:, 1:2]
+    r = torch.sqrt(x**2 + y**2 + eps)
+    theta = torch.atan2(y, x)
+
+    sqrt_r = torch.sqrt(r)
+    f1 = sqrt_r * torch.cos(theta / 2)
+    f2 = sqrt_r * torch.sin(theta / 2)
+    f3 = sqrt_r * torch.sin(theta / 2) * torch.sin(theta)
+    f4 = sqrt_r * torch.cos(theta / 2) * torch.sin(theta)
+
+    feats = [f1, f2, f3, f4]
+    return torch.cat(feats[:n_modes], dim=1)
+
+
+def get_u_in_dim(coord_scheme):
+    """Input feature dimension of DisplacementNet for a given coord_scheme."""
+    dims = {'cartesian': 2, 'elliptic': 2, 'both': 4, 'williams': 6}
+    if coord_scheme not in dims:
+        raise ValueError(f"Unknown coord_scheme: '{coord_scheme}'")
+    return dims[coord_scheme]
+
+
 class PFPhysicsEvaluator(nn.Module):
     """
     Phase-Field PINN Evaluator for Griffith crack problem.
@@ -57,10 +94,14 @@ class PFPhysicsEvaluator(nn.Module):
     ~10^10 scale mismatch that causes the network to degenerate.
     """
 
-    def __init__(self, u_net, phi_net, E, nu, G_c, l_0, a, k=1e-5):
+    def __init__(self, u_net, phi_net, E, nu, G_c, l_0, a, k=1e-5, coord_scheme='both'):
         super().__init__()
         self.u_net = u_net
         self.phi_net = phi_net
+
+        # Feature scheme fed to DisplacementNet: 'cartesian' | 'elliptic' | 'both' | 'williams'
+        # See docs/griffith-ablation-study.md §三 factor A for definitions.
+        self.coord_scheme = coord_scheme
 
         # Physical parameters (stored for reference / post-processing)
         self.E = E
@@ -83,6 +124,23 @@ class PFPhysicsEvaluator(nn.Module):
         self.l0_nd = l_0 / a
 
     # ------------------------------------------------------------------
+    # Helper: build the DisplacementNet input tensor according to coord_scheme
+    # ------------------------------------------------------------------
+    def _build_u_input(self, pts_nd):
+        scheme = self.coord_scheme
+        if scheme == 'cartesian':
+            return pts_nd
+        mu, nu = cartesian_to_elliptic(pts_nd, 1.0)
+        if scheme == 'elliptic':
+            return torch.cat([mu, nu], dim=1)
+        if scheme == 'both':
+            return torch.cat([pts_nd, mu, nu], dim=1)
+        if scheme == 'williams':
+            wf = williams_features(pts_nd, a_nd=1.0)
+            return torch.cat([pts_nd, wf], dim=1)
+        raise ValueError(f"Unknown coord_scheme: '{scheme}'")
+
+    # ------------------------------------------------------------------
     # Helper: compute engineering strains from network output (u, v)
     # Everything is already in non-dimensional coordinates because the
     # network is fed x* = x/L0 and outputs u* = u/L0.
@@ -95,11 +153,8 @@ class PFPhysicsEvaluator(nn.Module):
         """
         pts_nd = pts_nd.clone().requires_grad_(True)
         
-        # Elliptic mapping (a_nd = 1.0 since we scaled by L0=a)
-        mu, nu = cartesian_to_elliptic(pts_nd, 1.0)
-        
-        # Input to DisplacementNet is [x, y, mu, nu]
-        u_in = torch.cat([pts_nd, mu, nu], dim=1)
+        # Input to DisplacementNet depends on self.coord_scheme (see _build_u_input)
+        u_in = self._build_u_input(pts_nd)
         
         out_nd = self.u_net(u_in)          # network outputs u*, v*
         u_nd = out_nd[:, 0:1]
@@ -195,9 +250,7 @@ class PFPhysicsEvaluator(nn.Module):
         loss_pde = w_pde * loss_equil
         
         def eval_u(pts):
-            mu, nu = cartesian_to_elliptic(pts, 1.0)
-            u_in = torch.cat([pts, mu, nu], dim=1)
-            return self.u_net(u_in)
+            return self.u_net(self._build_u_input(pts))
 
         # ---- Dirichlet: top / bottom displacement ----
         pts_top = bc_dict_nd['top'].clone().requires_grad_(True)

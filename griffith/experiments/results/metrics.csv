@@ -1,0 +1,2 @@
+tag,coord_scheme,precision,arch,seed,peak_loc_err,peak_mag_ratio,l2_rel_err,bc_err,sym_err,equil_final
+cartesian_fp32_standard_seed0,cartesian,fp32,standard,0,0.39028836043510245,-3.41855509600654,9.55349680952211,0.2217298448085785,6157.0595703125,0.014793580397963524

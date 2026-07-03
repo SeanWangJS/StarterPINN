@@ -22,15 +22,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # ------------------------------------------------------------------ #
-    # Floating-point precision
-    # ------------------------------------------------------------------ #
-    if cfg.get('fp64', False):
-        torch.set_default_dtype(torch.float64)
-        print("Precision : FP64 (double)")
-    else:
-        print("Precision : FP32 (single)")
-
     phys = cfg['physics']
     E, nu, G_c, l_0, a_phys = phys['E'], phys['nu'], phys['G_c'], phys['l_0'], phys['a']
     W, H = phys['W'], phys['H']
@@ -114,70 +105,6 @@ def main():
     w_pde_phi  = wc['w_pde_phi']
 
     global_step = 0
-
-    # ------------------------------------------------------------------ #
-    # [DIAG] Phase A: Elastic-only diagnostic  (phi frozen to 0)
-    # Controlled by train.diag_mode in default.yaml.
-    # Purpose: verify that the displacement network can capture crack-tip
-    # stress concentration before introducing phase-field coupling.
-    # ------------------------------------------------------------------ #
-    if tc.get('diag_mode', False):
-        diag_steps = tc.get('diag_steps', 4000)
-        v_max_nd   = tc['v_max'] / L0          # full load, no ramp
-
-        print(f"\n{'='*60}")
-        print(f"DIAGNOSTIC MODE: elastic-only training  ({diag_steps} steps)")
-        print(f"phi forced to 0 everywhere  |  v_max* = {v_max_nd:.4f}")
-        print(f"{'='*60}\n")
-
-        # Override phi_net to always return zeros (pure elastic, g(phi)=1)
-        _orig_phi_fwd = phi_net.forward
-        phi_net.eval()
-        phi_net.forward = lambda x: torch.zeros(
-            x.shape[0], 1, device=x.device)
-
-        u_net.train()
-        pbar_diag = tqdm(range(diag_steps), desc="[Diag] Elastic U")
-        loss_equil_val = float('inf')
-        bc_u_val       = float('inf')
-        for diag_i in pbar_diag:
-            opt_u.zero_grad()
-            loss_u, loss_equil, bc_u, cf_u, sym_u = evaluator.compute_u_loss(
-                pts_nd, bc_dict_nd, v_max_nd, w_pde_u, w_bc_u,
-                crack_face_nd=crack_face_nd, w_crack_face=w_crack,
-                sym_axis_nd=sym_axis_nd,    w_sym=w_sym
-            )
-            loss_u.backward()
-            opt_u.step()
-
-            loss_equil_val = loss_equil
-            bc_u_val       = bc_u
-            writer.add_scalar('Diag/U_Total', loss_u.item(), diag_i)
-            writer.add_scalar('Diag/U_Equil', loss_equil,    diag_i)
-            writer.add_scalar('Diag/U_BC',    bc_u,          diag_i)
-            pbar_diag.set_postfix(
-                {'Eq': f'{loss_equil:.2e}', 'BC': f'{bc_u:.2e}'})
-
-        phi_net.forward = _orig_phi_fwd   # restore
-
-        print(f"\n[Diag] Final equil loss : {loss_equil_val:.4e}")
-        print(f"[Diag] Final BC loss    : {bc_u_val:.4e}")
-
-        # Save diagnostic checkpoint (same path → plot_results.py works unchanged)
-        save_dir  = os.path.join(os.path.dirname(__file__), 'results', 'weights')
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, 'griffith_pf_model.pth')
-        torch.save({
-            'u_net':     u_net.state_dict(),
-            'phi_net':   phi_net.state_dict(),
-            'scales':    {'L0': L0, 'E0': E, 'H0': H0},
-            'domain':    'right_half',
-            'diag_mode': True,
-        }, save_path)
-        print(f"[Diag] Checkpoint saved  → {save_path}")
-        print("[Diag] Visualize with:    python scripts/plot_results.py --elastic")
-        writer.close()
-        return
 
     # ------------------------------------------------------------------ #
     # Quasi-static loading loop

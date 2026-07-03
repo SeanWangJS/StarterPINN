@@ -1,5 +1,3 @@
-fp64: true   # Use double precision (FP64) throughout; set false for FP32
-
 train:
   domain_points: 50000
   bc_points: 1600
@@ -13,8 +11,6 @@ train:
   u_steps: 800
   phi_lr: 0.0015
   phi_steps: 800
-  diag_mode: true        # Run elastic-only diagnostic; set false for full coupled training
-  diag_steps: 4000       # Steps for elastic diagnostic pre-training
 
 model:
   u_in_dim: 4            # [x, y, mu, nu]
