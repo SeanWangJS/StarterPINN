@@ -39,6 +39,32 @@ def load_base_config():
         return yaml.safe_load(f)
 
 
+def make_tag(coord_scheme, precision, arch, seed):
+    return f"{coord_scheme}_{precision}_{arch}_seed{seed}"
+
+
+def load_completed_rows():
+    """Read experiments/results/metrics.csv (if it exists) into a dict keyed by tag.
+
+    Used by ablation_runner.py to skip re-running configurations that already
+    completed successfully before an interruption. Only fully-written rows are
+    considered 'done' -- a run that crashed mid-training never got its row
+    appended, so it is naturally re-run.
+    """
+    rows = {}
+    if not os.path.exists(METRICS_CSV):
+        return rows
+    with open(METRICS_CSV, 'r', newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            row['seed'] = int(row['seed'])
+            for col in ('peak_loc_err', 'peak_mag_ratio', 'l2_rel_err',
+                        'bc_err', 'sym_err', 'equil_final'):
+                row[col] = float(row[col])
+            rows[row['tag']] = row
+    return rows
+
+
 def run_one(coord_scheme='both', precision='fp32', arch='standard', seed=0,
             steps=None, save_plot=True, cfg=None):
     """Run a single (coord_scheme, precision, arch, seed) configuration end-to-end."""
@@ -47,7 +73,7 @@ def run_one(coord_scheme='both', precision='fp32', arch='standard', seed=0,
         cfg, coord_scheme=coord_scheme, precision=precision, arch=arch, seed=seed, steps=steps)
     metrics = compute_metrics(result, cfg['physics'], cfg)
 
-    tag = f"{coord_scheme}_{precision}_{arch}_seed{seed}"
+    tag = make_tag(coord_scheme, precision, arch, seed)
     row = {'tag': tag, 'coord_scheme': coord_scheme, 'precision': precision,
            'arch': arch, 'seed': seed, **metrics}
 

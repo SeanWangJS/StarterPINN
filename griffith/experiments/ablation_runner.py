@@ -15,7 +15,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from experiments.run_diagnostic import run_one, load_base_config
+from experiments.run_diagnostic import run_one, load_base_config, make_tag, load_completed_rows
 
 COORD_SCHEMES = ['cartesian', 'elliptic', 'both', 'williams']
 PRECISIONS = ['fp32', 'fp64']
@@ -24,13 +24,25 @@ SEEDS = [0, 1, 2]
 NUMERIC_COLS = ['peak_loc_err', 'peak_mag_ratio', 'l2_rel_err', 'bc_err', 'sym_err', 'equil_final']
 
 
-def run_stage1(seeds=SEEDS, steps=None, save_plot=False):
-    """Sweep coord_scheme x precision at arch='standard'."""
+def run_stage1(seeds=SEEDS, steps=None, save_plot=False, skip_existing=True):
+    """Sweep coord_scheme x precision at arch='standard'.
+
+    If skip_existing=True (default), any (coord_scheme, precision, seed)
+    combination already present in experiments/results/metrics.csv is loaded
+    from disk instead of re-run, so an interrupted sweep can simply be
+    restarted from scratch and it will only compute the missing rows.
+    """
     cfg = load_base_config()
+    completed = load_completed_rows() if skip_existing else {}
     rows = []
     for coord_scheme in COORD_SCHEMES:
         for precision in PRECISIONS:
             for seed in seeds:
+                tag = make_tag(coord_scheme, precision, 'standard', seed)
+                if skip_existing and tag in completed:
+                    print(f"Skipping already-completed run: {tag}")
+                    rows.append(completed[tag])
+                    continue
                 row = run_one(coord_scheme=coord_scheme, precision=precision,
                                arch='standard', seed=seed, steps=steps,
                                save_plot=save_plot, cfg=cfg)
@@ -38,12 +50,22 @@ def run_stage1(seeds=SEEDS, steps=None, save_plot=False):
     return rows
 
 
-def run_stage2(best_coord_scheme, best_precision, seeds=SEEDS, steps=None, save_plot=False):
-    """Compare arch='standard' vs arch='mixed' at the best (coord_scheme, precision)."""
+def run_stage2(best_coord_scheme, best_precision, seeds=SEEDS, steps=None,
+               save_plot=False, skip_existing=True):
+    """Compare arch='standard' vs arch='mixed' at the best (coord_scheme, precision).
+
+    Same skip_existing behavior as run_stage1.
+    """
     cfg = load_base_config()
+    completed = load_completed_rows() if skip_existing else {}
     rows = []
     for arch in ['standard', 'mixed']:
         for seed in seeds:
+            tag = make_tag(best_coord_scheme, best_precision, arch, seed)
+            if skip_existing and tag in completed:
+                print(f"Skipping already-completed run: {tag}")
+                rows.append(completed[tag])
+                continue
             row = run_one(coord_scheme=best_coord_scheme, precision=best_precision,
                            arch=arch, seed=seed, steps=steps, save_plot=save_plot, cfg=cfg)
             rows.append(row)
