@@ -40,7 +40,7 @@ def cartesian_to_elliptic(pts_nd, a_nd):
     return mu, nu
 
 
-def williams_features(pts_nd, a_nd=1.0, n_modes=4, eps=1e-6):
+def williams_features(pts_nd, a_nd=1.0, n_modes=4, eps=1e-6, r_floor=0.0):
     """
     Williams eigenfunction expansion features around the right crack tip (a_nd, 0).
 
@@ -49,14 +49,34 @@ def williams_features(pts_nd, a_nd=1.0, n_modes=4, eps=1e-6):
     inferred by the network from the PDE residual). See
     docs/griffith-next-steps.md §步骤2 for the derivation.
 
-    pts_nd  : (N, 2) non-dimensional coordinates (x*, y*)
-    a_nd    : non-dimensional crack half-length (1.0 since L0 = a)
-    n_modes : number of leading modes to return (<= 4)
-    Returns : (N, n_modes) tensor
+    pts_nd   : (N, 2) non-dimensional coordinates (x*, y*)
+    a_nd     : non-dimensional crack half-length (1.0 since L0 = a)
+    n_modes  : number of leading modes to return (<= 4)
+    r_floor  : additional radial floor (same non-dimensional length units as
+               pts_nd). Points with true radius r_raw < r_floor are smoothly
+               pushed outward to r_floor (their angle theta is preserved
+               exactly), which caps d(f_i)/d(x,y) at O(1/sqrt(r_floor))
+               instead of diverging as r_raw -> 0. r_floor=0 (default)
+               recovers the original, mathematically-exact features.
+               See experiments/debug_williams_sign.py, which measured a
+               ~64-86x gradient amplification near the tip with r_floor=0
+               and confirmed the feature *definition* itself is not buggy
+               (it exactly spans the analytical field with correct signs) --
+               the instability comes purely from this gradient blow-up.
+    Returns  : (N, n_modes) tensor
     """
     x = pts_nd[:, 0:1] - a_nd
     y = pts_nd[:, 1:2]
-    r = torch.sqrt(x**2 + y**2 + eps)
+    r_raw = torch.sqrt(x**2 + y**2 + eps)
+
+    if r_floor > 0:
+        r = r_raw + r_floor
+        scale = r / r_raw
+        x = x * scale
+        y = y * scale
+    else:
+        r = r_raw
+
     theta = torch.atan2(y, x)
 
     sqrt_r = torch.sqrt(r)
@@ -94,7 +114,8 @@ class PFPhysicsEvaluator(nn.Module):
     ~10^10 scale mismatch that causes the network to degenerate.
     """
 
-    def __init__(self, u_net, phi_net, E, nu, G_c, l_0, a, k=1e-5, coord_scheme='both'):
+    def __init__(self, u_net, phi_net, E, nu, G_c, l_0, a, k=1e-5, coord_scheme='both',
+                 williams_r_floor=0.0):
         super().__init__()
         self.u_net = u_net
         self.phi_net = phi_net
@@ -102,6 +123,11 @@ class PFPhysicsEvaluator(nn.Module):
         # Feature scheme fed to DisplacementNet: 'cartesian' | 'elliptic' | 'both' | 'williams'
         # See docs/griffith-ablation-study.md §三 factor A for definitions.
         self.coord_scheme = coord_scheme
+
+        # Near-tip gradient damping for coord_scheme='williams' (non-dimensional
+        # length units, i.e. a fraction of the crack half-length a). See
+        # williams_features()'s r_floor docstring for rationale.
+        self.williams_r_floor = williams_r_floor
 
         # Physical parameters (stored for reference / post-processing)
         self.E = E
@@ -136,7 +162,7 @@ class PFPhysicsEvaluator(nn.Module):
         if scheme == 'both':
             return torch.cat([pts_nd, mu, nu], dim=1)
         if scheme == 'williams':
-            wf = williams_features(pts_nd, a_nd=1.0)
+            wf = williams_features(pts_nd, a_nd=1.0, r_floor=self.williams_r_floor)
             return torch.cat([pts_nd, wf], dim=1)
         raise ValueError(f"Unknown coord_scheme: '{scheme}'")
 

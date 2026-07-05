@@ -39,8 +39,11 @@ def load_base_config():
         return yaml.safe_load(f)
 
 
-def make_tag(coord_scheme, precision, arch, seed):
-    return f"{coord_scheme}_{precision}_{arch}_seed{seed}"
+def make_tag(coord_scheme, precision, arch, seed, williams_r_floor=0.0):
+    tag = f"{coord_scheme}_{precision}_{arch}_seed{seed}"
+    if coord_scheme == 'williams' and williams_r_floor > 0:
+        tag += f"_rfloor{williams_r_floor:g}"
+    return tag
 
 
 def load_completed_rows():
@@ -66,14 +69,15 @@ def load_completed_rows():
 
 
 def run_one(coord_scheme='both', precision='fp32', arch='standard', seed=0,
-            steps=None, save_plot=True, cfg=None):
+            steps=None, save_plot=True, cfg=None, williams_r_floor=0.0):
     """Run a single (coord_scheme, precision, arch, seed) configuration end-to-end."""
     cfg = cfg if cfg is not None else load_base_config()
     result = run_elastic_diagnostic(
-        cfg, coord_scheme=coord_scheme, precision=precision, arch=arch, seed=seed, steps=steps)
+        cfg, coord_scheme=coord_scheme, precision=precision, arch=arch, seed=seed,
+        steps=steps, williams_r_floor=williams_r_floor)
     metrics = compute_metrics(result, cfg['physics'], cfg)
 
-    tag = make_tag(coord_scheme, precision, arch, seed)
+    tag = make_tag(coord_scheme, precision, arch, seed, williams_r_floor)
     row = {'tag': tag, 'coord_scheme': coord_scheme, 'precision': precision,
            'arch': arch, 'seed': seed, **metrics}
 
@@ -117,7 +121,13 @@ if __name__ == '__main__':
     parser.add_argument('--arch', choices=['standard', 'mixed'], default='standard')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--steps', type=int, default=None)
+    parser.add_argument('--williams_r_floor', type=float, default=0.0,
+                         help='Near-tip gradient damping floor for coord_scheme=williams '
+                              '(non-dimensional, fraction of crack half-length a). See '
+                              'experiments/debug_williams_sign.py for the diagnostic that '
+                              'motivated this parameter.')
     args = parser.parse_args()
 
-    result_row = run_one(args.coord_scheme, args.precision, args.arch, args.seed, args.steps)
+    result_row = run_one(args.coord_scheme, args.precision, args.arch, args.seed, args.steps,
+                          williams_r_floor=args.williams_r_floor)
     print(result_row)

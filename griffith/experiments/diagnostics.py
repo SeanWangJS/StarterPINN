@@ -56,7 +56,7 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
 
 
 def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='standard',
-                            seed=0, steps=None, device=None):
+                            seed=0, steps=None, device=None, williams_r_floor=0.0):
     """
     Train the displacement network only (phi forced to 0 everywhere, i.e.
     g(phi)=1, fully elastic) and return the trained networks + evaluator +
@@ -85,12 +85,12 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         from experiments.mixed_pinn_variant import MixedPFEvaluator
         evaluator = MixedPFEvaluator(
             u_net, phi_net, E=E, nu=nu, G_c=G_c, l_0=l_0, a=a_phys, k=phys['k'],
-            coord_scheme=coord_scheme
+            coord_scheme=coord_scheme, williams_r_floor=williams_r_floor
         ).to(device)
     else:
         evaluator = PFPhysicsEvaluator(
             u_net, phi_net, E=E, nu=nu, G_c=G_c, l_0=l_0, a=a_phys, k=phys['k'],
-            coord_scheme=coord_scheme
+            coord_scheme=coord_scheme, williams_r_floor=williams_r_floor
         ).to(device)
 
     from src.geometry import GriffithGeometrySampler
