@@ -115,7 +115,7 @@ class PFPhysicsEvaluator(nn.Module):
     """
 
     def __init__(self, u_net, phi_net, E, nu, G_c, l_0, a, k=1e-5, coord_scheme='both',
-                 williams_r_floor=0.0):
+                 williams_r_floor=0.0, y_symmetric=False):
         super().__init__()
         self.u_net = u_net
         self.phi_net = phi_net
@@ -128,6 +128,17 @@ class PFPhysicsEvaluator(nn.Module):
         # length units, i.e. a fraction of the crack half-length a). See
         # williams_features()'s r_floor docstring for rationale.
         self.williams_r_floor = williams_r_floor
+
+        # Architecturally enforce sigma_yy(x,y) == sigma_yy(x,-y) (u even in y,
+        # v odd in y) via _eval_uv_raw() below, instead of relying on the
+        # network to learn this symmetry unconstrained. See
+        # docs/griffith-ablation-study.md §9 (L4 tier-2 factors): an n=8-seed
+        # comparison at coord_scheme='elliptic' showed this significantly
+        # improves l2_rel_err (0.503->0.353, |t|~3.35) and trivially drives
+        # sym_err to exactly 0.0, with no statistically significant change to
+        # peak_loc_err or peak_mag_ratio. Originally prototyped as a separate
+        # subclass in experiments/y_symmetric_variant.py.
+        self.y_symmetric = y_symmetric
 
         # Physical parameters (stored for reference / post-processing)
         self.E = E
@@ -169,14 +180,31 @@ class PFPhysicsEvaluator(nn.Module):
     # ------------------------------------------------------------------
     # Helper: raw (u*, v*) network evaluation, factored out of
     # compute_strains() and compute_u_loss()'s Dirichlet/rigid-body terms so
-    # that variants (e.g. an architecturally y-mirror-symmetric evaluator,
-    # see experiments/y_symmetric_variant.py) can override this single hook
-    # and have the symmetry apply consistently everywhere u_net is queried,
-    # without duplicating compute_u_loss. Base behavior: identical to
-    # calling self.u_net(self._build_u_input(pts)) directly.
+    # that self.y_symmetric can apply consistently everywhere u_net is
+    # queried without duplicating compute_u_loss. When y_symmetric=True, the
+    # network is evaluated at (x,y) and its raw-coordinate mirror (x,-y) (both
+    # differentiable functions of the same pts_nd, so autograd threads
+    # gradients through both branches correctly) and combined so that u is
+    # forced even in y and v is forced odd in y -- this holds for any
+    # coord_scheme since features are rebuilt from scratch for the mirrored
+    # point via _build_u_input(), with no per-scheme parity bookkeeping
+    # required. Base (y_symmetric=False) behavior: identical to calling
+    # self.u_net(self._build_u_input(pts)) directly.
     # ------------------------------------------------------------------
     def _eval_uv_raw(self, pts_nd):
-        return self.u_net(self._build_u_input(pts_nd))
+        if not self.y_symmetric:
+            return self.u_net(self._build_u_input(pts_nd))
+
+        x = pts_nd[:, 0:1]
+        y = pts_nd[:, 1:2]
+        pts_mirror = torch.cat([x, -y], dim=1)
+
+        out_pos = self.u_net(self._build_u_input(pts_nd))
+        out_neg = self.u_net(self._build_u_input(pts_mirror))
+
+        u_nd = 0.5 * (out_pos[:, 0:1] + out_neg[:, 0:1])
+        v_nd = 0.5 * (out_pos[:, 1:2] - out_neg[:, 1:2])
+        return torch.cat([u_nd, v_nd], dim=1)
 
     # ------------------------------------------------------------------
     # Helper: compute engineering strains from network output (u, v)

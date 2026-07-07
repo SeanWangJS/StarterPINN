@@ -92,10 +92,9 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
             coord_scheme=coord_scheme, williams_r_floor=williams_r_floor
         ).to(device)
     elif arch == 'y_sym':
-        from experiments.y_symmetric_variant import YSymmetricPFEvaluator
-        evaluator = YSymmetricPFEvaluator(
+        evaluator = PFPhysicsEvaluator(
             u_net, phi_net, E=E, nu=nu, G_c=G_c, l_0=l_0, a=a_phys, k=phys['k'],
-            coord_scheme=coord_scheme, williams_r_floor=williams_r_floor
+            coord_scheme=coord_scheme, williams_r_floor=williams_r_floor, y_symmetric=True
         ).to(device)
     else:
         evaluator = PFPhysicsEvaluator(

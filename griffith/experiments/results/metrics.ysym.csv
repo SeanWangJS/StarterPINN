@@ -1,0 +1,9 @@
+tag,coord_scheme,precision,arch,seed,peak_loc_err,peak_mag_ratio,l2_rel_err,bc_err,sym_err,equil_final
+elliptic_fp32_y_sym_seed0,elliptic,fp32,y_sym,0,0.240380707,-0.086525135,0.374661375,5.82E-06,0,0.002534491
+elliptic_fp32_y_sym_seed1,elliptic,fp32,y_sym,1,0.286840052,0.048722081,0.337069247,2.81E-06,0,0.001726521
+elliptic_fp32_y_sym_seed2,elliptic,fp32,y_sym,2,0.319194691,-0.012172207,0.280100763,2.95E-06,0,0.002044823
+elliptic_fp32_y_sym_seed3,elliptic,fp32,y_sym,3,0.27744246,-0.289710283,0.378260332,4.77E-06,0,0.002021367
+elliptic_fp32_y_sym_seed4,elliptic,fp32,y_sym,4,0.191500147,0.120728396,0.315352238,5.26E-06,0,0.002816148
+elliptic_fp32_y_sym_seed5,elliptic,fp32,y_sym,5,0.248130908,0.306690335,0.415913336,7.52E-06,0,0.002683574
+elliptic_fp32_y_sym_seed6,elliptic,fp32,y_sym,6,0.226758481,-0.159982666,0.323779403,0.000223991,0,0.003231747
+elliptic_fp32_y_sym_seed7,elliptic,fp32,y_sym,7,0.235820317,0.097281002,0.395722643,4.27E-06,0,0.002075449

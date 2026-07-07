@@ -41,24 +41,29 @@ If this ablation factor turns out to help (lower sym_err / peak_loc_err
 without regressing l2_rel_err or bc_err), promote _eval_uv_raw's override
 back into src/evaluator.py as a constructor flag (e.g. y_symmetric=True)
 rather than leaving it only here.
-"""
-import torch
 
+**UPDATE**: an n=8-seed comparison at coord_scheme='elliptic' (see
+docs/griffith-ablation-study.md \u00a79) showed y-mirror symmetry significantly
+improves l2_rel_err (0.503 -> 0.353, |t|~3.35) with no statistically
+significant change to peak_loc_err or peak_mag_ratio, so this has now been
+promoted into src/evaluator.py's PFPhysicsEvaluator as the y_symmetric=True
+constructor flag. This module is kept only as a thin backward-compatible
+alias -- new code should pass y_symmetric=True to PFPhysicsEvaluator (or
+experiments/diagnostics.py's arch='y_sym') directly instead of importing
+YSymmetricPFEvaluator.
+"""
 from src.evaluator import PFPhysicsEvaluator  # noqa: F401
 
 
 class YSymmetricPFEvaluator(PFPhysicsEvaluator):
-    """PFPhysicsEvaluator with sigma_yy(x,y) == sigma_yy(x,-y) enforced by
-    construction (see module docstring)."""
+    """Deprecated alias for PFPhysicsEvaluator(..., y_symmetric=True).
 
-    def _eval_uv_raw(self, pts_nd):
-        x = pts_nd[:, 0:1]
-        y = pts_nd[:, 1:2]
-        pts_mirror = torch.cat([x, -y], dim=1)
+    Kept only for backward compatibility with any code that still imports
+    this class directly; prefer passing y_symmetric=True to
+    PFPhysicsEvaluator instead.
+    """
 
-        out_pos = self.u_net(self._build_u_input(pts_nd))
-        out_neg = self.u_net(self._build_u_input(pts_mirror))
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('y_symmetric', True)
+        super().__init__(*args, **kwargs)
 
-        u_nd = 0.5 * (out_pos[:, 0:1] + out_neg[:, 0:1])
-        v_nd = 0.5 * (out_pos[:, 1:2] - out_neg[:, 1:2])
-        return torch.cat([u_nd, v_nd], dim=1)
