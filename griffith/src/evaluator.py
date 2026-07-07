@@ -167,6 +167,18 @@ class PFPhysicsEvaluator(nn.Module):
         raise ValueError(f"Unknown coord_scheme: '{scheme}'")
 
     # ------------------------------------------------------------------
+    # Helper: raw (u*, v*) network evaluation, factored out of
+    # compute_strains() and compute_u_loss()'s Dirichlet/rigid-body terms so
+    # that variants (e.g. an architecturally y-mirror-symmetric evaluator,
+    # see experiments/y_symmetric_variant.py) can override this single hook
+    # and have the symmetry apply consistently everywhere u_net is queried,
+    # without duplicating compute_u_loss. Base behavior: identical to
+    # calling self.u_net(self._build_u_input(pts)) directly.
+    # ------------------------------------------------------------------
+    def _eval_uv_raw(self, pts_nd):
+        return self.u_net(self._build_u_input(pts_nd))
+
+    # ------------------------------------------------------------------
     # Helper: compute engineering strains from network output (u, v)
     # Everything is already in non-dimensional coordinates because the
     # network is fed x* = x/L0 and outputs u* = u/L0.
@@ -180,9 +192,7 @@ class PFPhysicsEvaluator(nn.Module):
         pts_nd = pts_nd.clone().requires_grad_(True)
         
         # Input to DisplacementNet depends on self.coord_scheme (see _build_u_input)
-        u_in = self._build_u_input(pts_nd)
-        
-        out_nd = self.u_net(u_in)          # network outputs u*, v*
+        out_nd = self._eval_uv_raw(pts_nd)  # network outputs u*, v*
         u_nd = out_nd[:, 0:1]
         v_nd = out_nd[:, 1:2]
         
@@ -276,7 +286,7 @@ class PFPhysicsEvaluator(nn.Module):
         loss_pde = w_pde * loss_equil
         
         def eval_u(pts):
-            return self.u_net(self._build_u_input(pts))
+            return self._eval_uv_raw(pts)
 
         # ---- Dirichlet: top / bottom displacement ----
         pts_top = bc_dict_nd['top'].clone().requires_grad_(True)

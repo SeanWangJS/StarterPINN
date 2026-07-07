@@ -33,6 +33,10 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
 
     arch == 'standard' : DisplacementNet outputs [u, v]              (factor C1)
     arch == 'mixed'    : MixedDisplacementNet outputs [u,v,sxx,syy,txy] (factor C2)
+    arch == 'y_sym'    : DisplacementNet outputs [u, v], but the evaluator
+                         (YSymmetricPFEvaluator) enforces sigma_yy(x,y) ==
+                         sigma_yy(x,-y) by construction -- see
+                         experiments/y_symmetric_variant.py
     """
     u_in_dim = get_u_in_dim(coord_scheme)
     if arch == 'mixed':
@@ -40,7 +44,7 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
         u_net = MixedDisplacementNet(
             in_dim=u_in_dim, hidden_layers=hidden_layers, hidden_neurons=hidden_neurons
         ).to(device)
-    elif arch == 'standard':
+    elif arch in ('standard', 'y_sym'):
         u_net = DisplacementNet(
             in_dim=u_in_dim, out_dim=2,
             hidden_layers=hidden_layers, hidden_neurons=hidden_neurons
@@ -84,6 +88,12 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
     if arch == 'mixed':
         from experiments.mixed_pinn_variant import MixedPFEvaluator
         evaluator = MixedPFEvaluator(
+            u_net, phi_net, E=E, nu=nu, G_c=G_c, l_0=l_0, a=a_phys, k=phys['k'],
+            coord_scheme=coord_scheme, williams_r_floor=williams_r_floor
+        ).to(device)
+    elif arch == 'y_sym':
+        from experiments.y_symmetric_variant import YSymmetricPFEvaluator
+        evaluator = YSymmetricPFEvaluator(
             u_net, phi_net, E=E, nu=nu, G_c=G_c, l_0=l_0, a=a_phys, k=phys['k'],
             coord_scheme=coord_scheme, williams_r_floor=williams_r_floor
         ).to(device)

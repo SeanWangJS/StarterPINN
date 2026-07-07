@@ -118,7 +118,7 @@ if __name__ == '__main__':
     parser.add_argument('--coord_scheme', choices=['cartesian', 'elliptic', 'both', 'williams'],
                          default='both')
     parser.add_argument('--precision', choices=['fp32', 'fp64'], default='fp32')
-    parser.add_argument('--arch', choices=['standard', 'mixed'], default='standard')
+    parser.add_argument('--arch', choices=['standard', 'mixed', 'y_sym'], default='standard')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--steps', type=int, default=None)
     parser.add_argument('--williams_r_floor', type=float, default=0.0,
