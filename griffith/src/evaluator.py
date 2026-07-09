@@ -157,9 +157,14 @@ class PFPhysicsEvaluator(nn.Module):
         # Dirichlet displacement BC) via _eval_uv_raw() below, instead of the
         # soft-penalty loss_top/loss_bot terms in compute_u_loss(). Uses the
         # clamped-envelope trial function
-        #     v*(x,y) = (y*/halfH*) * v_max* + (1 - (y*/halfH*)^2) * v_net*(x,y)
+        #     v*(x,y) = (y*/halfH*) * v_max* + (1 - (y*/halfH*)^2)^2 * v_net*(x,y)
         # which equals +-v_max* exactly at y* = +-halfH* for ANY raw network
-        # output v_net*, for all coord_scheme/arch choices. This is odd in y*
+        # output v_net*, for all coord_scheme/arch choices. The envelope is
+        # SQUARED so that its y-derivative also vanishes at y*=+-halfH* (not
+        # just its value) -- otherwise eps_yy=dv*/dy leaks an unregularized
+        # v_net*(x,+-halfH*) term right at the boundary, which was found to
+        # produce a spurious sigma_yy peak at the domain corners (see
+        # docs/griffith-ablation-study.md §9). This is odd in y*
         # whenever v_net* is odd in y* (true when y_symmetric=True), so the
         # two flags compose correctly. v_max* is dynamic (changes every
         # quasi-static load step) and is refreshed by compute_u_loss() via
@@ -231,11 +236,28 @@ class PFPhysicsEvaluator(nn.Module):
 
         # Clamp v* to exactly +-v_max* at y* = +-half_H_nd (see __init__
         # docstring). u* is left untouched -- only v is hard-constrained.
+        #
+        # The envelope B(y) = (1 - y_ratio**2)**2 is SQUARED (rather than the
+        # bare (1 - y_ratio**2)) so that BOTH B(+-half_H_nd)=0 *and*
+        # B'(+-half_H_nd)=0. With the un-squared envelope, eps_yy = dv*/dy
+        # picks up a residual B'(y)*v_net term that does NOT vanish at the
+        # clamped edge (since B'(+-1) != 0 there even though B(+-1)=0), and
+        # v_net is otherwise completely unconstrained at y=+-half_H_nd (no
+        # loss term touches it there once loss_top/loss_bot are removed) --
+        # this let stray/unregularized v_net values leak into sigma_yy right
+        # at the domain corners, producing a spurious global argmax there
+        # that corrupted the peak_loc_err metric (traced to an exact
+        # sqrt(0.61) match against the far corner (x=-W/2, y=+-H/2) in an
+        # n=6-seed y_sym_hard run -- see docs/griffith-ablation-study.md §9).
+        # Squaring makes B'(+-1)=0 too, so v_net's value AND its y-gradient
+        # are both suppressed at the exact boundary, eliminating this failure
+        # mode while still satisfying the Dirichlet BC exactly.
         u_nd = out[:, 0:1]
         v_net = out[:, 1:2]
         y = pts_nd[:, 1:2]
         y_ratio = y / self.half_H_nd
-        v_hard = y_ratio * self.v_max_nd + (1.0 - y_ratio**2) * v_net
+        envelope = (1.0 - y_ratio**2)**2
+        v_hard = y_ratio * self.v_max_nd + envelope * v_net
         return torch.cat([u_nd, v_hard], dim=1)
 
     # ------------------------------------------------------------------
