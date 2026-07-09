@@ -66,18 +66,38 @@ def evaluate_on_grid(result, phys, nx=150, ny=200):
     }
 
 
-def compute_metrics(result, phys, cfg, tip_exclusion_factor=0.5):
-    """Compute the six scalar metrics defined in docs/griffith-ablation-study.md \u00a75."""
+def compute_metrics(result, phys, cfg, tip_exclusion_factor=0.5, peak_search_radius=None):
+    """Compute the six scalar metrics defined in docs/griffith-ablation-study.md \u00a75.
+
+    peak_search_radius : restrict the peak_loc_err argmax search to points
+        within this physical distance of the true right tip (a, 0). Defaults
+        to half the distance from the tip to the nearest domain edge
+        (min(W/2 - a, H/2) / 2), which comfortably covers any genuine
+        near-tip localization error while excluding the domain corners
+        (x=+-W/2, y=+-H/2). Those corners are a mixed-boundary-condition
+        artifact of the finite-plate approximation (Neumann free-surface
+        meeting the Dirichlet-clamped top/bottom edge), not part of the
+        physical crack-tip stress concentration this metric is meant to
+        assess -- see docs/griffith-ablation-study.md \u00a79 for the
+        investigation that motivated this restriction.
+    """
     grid = evaluate_on_grid(result, phys)
     X, Y, SIG = grid['X'], grid['Y'], grid['SIG']
     a_phys, l_0 = phys['a'], phys['l_0']
+    W, H = phys['W'], phys['H']
+
+    if peak_search_radius is None:
+        peak_search_radius = 0.5 * min(W / 2.0 - a_phys, H / 2.0)
 
     E_prime = phys['E'] / (1 - phys['nu'] ** 2)
     v_max = cfg['train']['v_max']
     sigma_0 = E_prime * (v_max / (phys['H'] / 2.0))
 
-    # 1. Peak location error (distance from argmax to the true right tip)
-    idx = np.unravel_index(np.argmax(SIG), SIG.shape)
+    # 1. Peak location error (distance from argmax to the true right tip),
+    # searched only within peak_search_radius of the tip -- see docstring.
+    r_from_tip = np.sqrt((X - a_phys) ** 2 + Y ** 2)
+    SIG_search = np.where(r_from_tip < peak_search_radius, SIG, -np.inf)
+    idx = np.unravel_index(np.argmax(SIG_search), SIG_search.shape)
     peak_xy = np.array([X[idx], Y[idx]])
     peak_loc_err = float(np.linalg.norm(peak_xy - np.array([a_phys, 0.0])))
 
