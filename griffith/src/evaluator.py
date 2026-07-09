@@ -115,7 +115,7 @@ class PFPhysicsEvaluator(nn.Module):
     """
 
     def __init__(self, u_net, phi_net, E, nu, G_c, l_0, a, k=1e-5, coord_scheme='both',
-                 williams_r_floor=0.0, y_symmetric=False):
+                 williams_r_floor=0.0, y_symmetric=False, H=None, hard_dirichlet=False):
         super().__init__()
         self.u_net = u_net
         self.phi_net = phi_net
@@ -152,6 +152,26 @@ class PFPhysicsEvaluator(nn.Module):
         self.L0 = a                 # reference length [mm]
         self.E0 = E                 # reference stress [MPa]
         self.H0 = G_c / l_0        # reference energy density [MPa]
+
+        # Architecturally enforce v*(x, +-H*/2) == +-v_max* (top/bottom
+        # Dirichlet displacement BC) via _eval_uv_raw() below, instead of the
+        # soft-penalty loss_top/loss_bot terms in compute_u_loss(). Uses the
+        # clamped-envelope trial function
+        #     v*(x,y) = (y*/halfH*) * v_max* + (1 - (y*/halfH*)^2) * v_net*(x,y)
+        # which equals +-v_max* exactly at y* = +-halfH* for ANY raw network
+        # output v_net*, for all coord_scheme/arch choices. This is odd in y*
+        # whenever v_net* is odd in y* (true when y_symmetric=True), so the
+        # two flags compose correctly. v_max* is dynamic (changes every
+        # quasi-static load step) and is refreshed by compute_u_loss() via
+        # self.v_max_nd every call; it is "sticky" afterwards so that
+        # post-training evaluation code (e.g. metrics.py's evaluate_on_grid,
+        # which never calls compute_u_loss) sees the last load applied during
+        # training. See docs/griffith-ablation-study.md §9 for background.
+        self.hard_dirichlet = hard_dirichlet
+        self.half_H_nd = (H / 2.0) / self.L0 if H is not None else None
+        if hard_dirichlet and self.half_H_nd is None:
+            raise ValueError("hard_dirichlet=True requires H (plate height) to be passed")
+        self.v_max_nd = 0.0
 
         # Non-dimensional moduli  (both O(0.1 ~ 0.5))
         self.K_nd = 1.0 / (3.0 * (1.0 - 2.0 * nu))   # K* = K/E
@@ -193,18 +213,30 @@ class PFPhysicsEvaluator(nn.Module):
     # ------------------------------------------------------------------
     def _eval_uv_raw(self, pts_nd):
         if not self.y_symmetric:
-            return self.u_net(self._build_u_input(pts_nd))
+            out = self.u_net(self._build_u_input(pts_nd))
+        else:
+            x = pts_nd[:, 0:1]
+            y = pts_nd[:, 1:2]
+            pts_mirror = torch.cat([x, -y], dim=1)
 
-        x = pts_nd[:, 0:1]
+            out_pos = self.u_net(self._build_u_input(pts_nd))
+            out_neg = self.u_net(self._build_u_input(pts_mirror))
+
+            u_nd = 0.5 * (out_pos[:, 0:1] + out_neg[:, 0:1])
+            v_nd = 0.5 * (out_pos[:, 1:2] - out_neg[:, 1:2])
+            out = torch.cat([u_nd, v_nd], dim=1)
+
+        if not self.hard_dirichlet:
+            return out
+
+        # Clamp v* to exactly +-v_max* at y* = +-half_H_nd (see __init__
+        # docstring). u* is left untouched -- only v is hard-constrained.
+        u_nd = out[:, 0:1]
+        v_net = out[:, 1:2]
         y = pts_nd[:, 1:2]
-        pts_mirror = torch.cat([x, -y], dim=1)
-
-        out_pos = self.u_net(self._build_u_input(pts_nd))
-        out_neg = self.u_net(self._build_u_input(pts_mirror))
-
-        u_nd = 0.5 * (out_pos[:, 0:1] + out_neg[:, 0:1])
-        v_nd = 0.5 * (out_pos[:, 1:2] - out_neg[:, 1:2])
-        return torch.cat([u_nd, v_nd], dim=1)
+        y_ratio = y / self.half_H_nd
+        v_hard = y_ratio * self.v_max_nd + (1.0 - y_ratio**2) * v_net
+        return torch.cat([u_nd, v_hard], dim=1)
 
     # ------------------------------------------------------------------
     # Helper: compute engineering strains from network output (u, v)
@@ -291,6 +323,11 @@ class PFPhysicsEvaluator(nn.Module):
         sym_axis_nd    : (M, 2) points on x=0 for symmetry BC: u=0, τ_xy=0
         w_sym          : weight for symmetry axis penalty (high: hard constraint)
         """
+        # Refresh the dynamic load for _eval_uv_raw()'s hard_dirichlet clamp
+        # (no-op when hard_dirichlet=False). "Sticky" afterwards -- see
+        # __init__ docstring.
+        self.v_max_nd = v_max_nd
+
         eps_xx, eps_yy, eps_xy, x_y_nd, _, _, _, _, _ = self.compute_strains(pts_nd)
         phi = self.phi_net(x_y_nd).detach()
 
@@ -317,13 +354,19 @@ class PFPhysicsEvaluator(nn.Module):
             return self._eval_uv_raw(pts)
 
         # ---- Dirichlet: top / bottom displacement ----
-        pts_top = bc_dict_nd['top'].clone().requires_grad_(True)
-        uv_top  = eval_u(pts_top)
-        loss_top = torch.mean((uv_top[:, 1:2] - v_max_nd)**2)
+        if self.hard_dirichlet:
+            # v*(x, +-half_H_nd) = +-v_max* is satisfied exactly by
+            # construction in _eval_uv_raw(); no soft-penalty term needed.
+            loss_top = torch.tensor(0.0, device=pts_nd.device)
+            loss_bot = torch.tensor(0.0, device=pts_nd.device)
+        else:
+            pts_top = bc_dict_nd['top'].clone().requires_grad_(True)
+            uv_top  = eval_u(pts_top)
+            loss_top = torch.mean((uv_top[:, 1:2] - v_max_nd)**2)
 
-        pts_bot = bc_dict_nd['bottom'].clone().requires_grad_(True)
-        uv_bot  = eval_u(pts_bot)
-        loss_bot = torch.mean((uv_bot[:, 1:2] + v_max_nd)**2)
+            pts_bot = bc_dict_nd['bottom'].clone().requires_grad_(True)
+            uv_bot  = eval_u(pts_bot)
+            loss_bot = torch.mean((uv_bot[:, 1:2] + v_max_nd)**2)
 
         # ---- Neumann: right free surface σ_xx = τ_xy = 0 ----
         pts_right = bc_dict_nd['right'].clone().requires_grad_(True)

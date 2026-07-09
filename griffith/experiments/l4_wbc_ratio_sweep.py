@@ -147,7 +147,7 @@ if __name__ == '__main__':
                          choices=['cartesian', 'elliptic', 'both', 'williams'])
     parser.add_argument('--precision', nargs='+', default=['fp32'], choices=['fp32', 'fp64'])
     parser.add_argument('--arch', nargs='+', default=['y_sym'],
-                         choices=['standard', 'mixed', 'y_sym'])
+                         choices=['standard', 'mixed', 'y_sym', 'y_sym_hard'])
     parser.add_argument('--w_bc_u_values', nargs='+', type=float,
                          default=[50.0, 100.0, 200.0, 400.0])
     parser.add_argument('--w_pde_u', type=float, default=1.0,

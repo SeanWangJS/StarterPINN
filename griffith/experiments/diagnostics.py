@@ -31,12 +31,17 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
     """
     Construct (u_net, phi_net) for the requested architecture factor.
 
-    arch == 'standard' : DisplacementNet outputs [u, v]              (factor C1)
-    arch == 'mixed'    : MixedDisplacementNet outputs [u,v,sxx,syy,txy] (factor C2)
-    arch == 'y_sym'    : DisplacementNet outputs [u, v], but the evaluator
-                         (YSymmetricPFEvaluator) enforces sigma_yy(x,y) ==
-                         sigma_yy(x,-y) by construction -- see
-                         experiments/y_symmetric_variant.py
+    arch == 'standard'   : DisplacementNet outputs [u, v]              (factor C1)
+    arch == 'mixed'      : MixedDisplacementNet outputs [u,v,sxx,syy,txy] (factor C2)
+    arch == 'y_sym'      : DisplacementNet outputs [u, v], but the evaluator
+                           enforces sigma_yy(x,y) == sigma_yy(x,-y) by
+                           construction -- see PFPhysicsEvaluator's
+                           y_symmetric flag.
+    arch == 'y_sym_hard' : same as 'y_sym', plus the evaluator's
+                           hard_dirichlet flag also clamps v*(x,+-H*/2) to
+                           exactly +-v_max*, removing loss_top/loss_bot from
+                           the soft-penalty loss_bc entirely. See
+                           docs/griffith-ablation-study.md §9.
     """
     u_in_dim = get_u_in_dim(coord_scheme)
     if arch == 'mixed':
@@ -44,7 +49,7 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
         u_net = MixedDisplacementNet(
             in_dim=u_in_dim, hidden_layers=hidden_layers, hidden_neurons=hidden_neurons
         ).to(device)
-    elif arch in ('standard', 'y_sym'):
+    elif arch in ('standard', 'y_sym', 'y_sym_hard'):
         u_net = DisplacementNet(
             in_dim=u_in_dim, out_dim=2,
             hidden_layers=hidden_layers, hidden_neurons=hidden_neurons
@@ -95,6 +100,12 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         evaluator = PFPhysicsEvaluator(
             u_net, phi_net, E=E, nu=nu, G_c=G_c, l_0=l_0, a=a_phys, k=phys['k'],
             coord_scheme=coord_scheme, williams_r_floor=williams_r_floor, y_symmetric=True
+        ).to(device)
+    elif arch == 'y_sym_hard':
+        evaluator = PFPhysicsEvaluator(
+            u_net, phi_net, E=E, nu=nu, G_c=G_c, l_0=l_0, a=a_phys, k=phys['k'],
+            coord_scheme=coord_scheme, williams_r_floor=williams_r_floor, y_symmetric=True,
+            H=H, hard_dirichlet=True
         ).to(device)
     else:
         evaluator = PFPhysicsEvaluator(
