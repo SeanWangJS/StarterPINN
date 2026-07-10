@@ -80,6 +80,44 @@ class GriffithGeometrySampler:
         return torch.tensor(pts, dtype=torch.get_default_dtype(), device=self.device)
 
     # ------------------------------------------------------------------
+    # Mixture sampling density p(x, y) of sample_fixed_domain(), for
+    # importance-weighted Monte Carlo integration (Deep Energy Method --
+    # see docs/griffith-ablation-study.md §12 and
+    # PFPhysicsEvaluator.compute_u_loss_dem()).
+    # ------------------------------------------------------------------
+    def compute_mixture_density(self, pts_phys, l_0: float = 0.01):
+        """
+        Evaluate the closed-form mixture density p(x, y) that
+        sample_fixed_domain() draws from, at arbitrary query points.
+
+        sample_fixed_domain() is a 30/25/25/20 mixture of four components
+        (global uniform / crack-band / crack-tip disk / symmetry-axis band).
+        Each component's density has a simple closed form; weighting a
+        network output by 1/p_mixture(x,y) turns torch.mean(f * weights)
+        into an unbiased Monte Carlo estimate of the domain-average of f,
+        despite the non-uniform sampling. Ignores the negligible edge-clipping
+        applied in sample_fixed_domain() (the tip disk and symmetry band are
+        both far narrower than the domain, so clipping essentially never
+        triggers for this problem's geometry).
+
+        pts_phys : (N, 2) numpy array of physical (x, y) coordinates.
+        Returns  : (N, 1) numpy array of p(x, y) > 0.
+        """
+        x = pts_phys[:, 0:1]
+        y = pts_phys[:, 1:2]
+        band_w = 3.0 * l_0
+        tip_r = 4.0 * l_0
+
+        p_uniform = np.full_like(x, 1.0 / (self.W / 2.0 * self.H))
+        p_band = np.where(np.abs(y) < band_w, 1.0 / (self.W / 2.0 * 2.0 * band_w), 0.0)
+        r2 = (x - self.a) ** 2 + y ** 2
+        p_tip = np.where(r2 < tip_r ** 2, 1.0 / (np.pi * tip_r ** 2), 0.0)
+        p_symband = (2.0 / (l_0 * np.sqrt(2.0 * np.pi))) * np.exp(-x ** 2 / (2.0 * l_0 ** 2)) * (1.0 / self.H)
+
+        p_mix = 0.30 * p_uniform + 0.25 * p_band + 0.25 * p_tip + 0.20 * p_symband
+        return p_mix
+
+    # ------------------------------------------------------------------
     # Initial crack seed points  (right half: x ∈ [0, a])
     # ------------------------------------------------------------------
     def get_initial_crack_points(self, num_points):

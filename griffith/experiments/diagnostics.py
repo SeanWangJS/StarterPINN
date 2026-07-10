@@ -65,16 +65,27 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
 
 
 def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='standard',
-                            seed=0, steps=None, device=None, williams_r_floor=0.0):
+                            seed=0, steps=None, device=None, williams_r_floor=0.0,
+                            use_dem=False):
     """
     Train the displacement network only (phi forced to 0 everywhere, i.e.
     g(phi)=1, fully elastic) and return the trained networks + evaluator +
     final loss values.
 
+    use_dem : if True, train u_net with PFPhysicsEvaluator.compute_u_loss_dem
+        (Deep Energy Method: minimizes total potential energy via first
+        derivatives only) instead of compute_u_loss (strong-form equilibrium
+        PDE residual via second derivatives). Orthogonal to arch/y_symmetric/
+        hard_dirichlet -- composes with any of them. Not supported with
+        arch='mixed' (compute_u_loss_mixed has no DEM variant yet). See
+        docs/griffith-ablation-study.md §12.
+
     This function never touches griffith/results/ (the production output
     directory); callers (e.g. experiments/run_diagnostic.py) are responsible
     for persisting whatever they need under experiments/results/.
     """
+    if use_dem and arch == 'mixed':
+        raise ValueError("use_dem=True is not supported with arch='mixed' yet.")
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -127,6 +138,11 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
     crack_face_nd = crack_face_phys / L0
     sym_axis_nd = sym_axis_phys / L0
 
+    weights_nd = None
+    if use_dem:
+        p_mix = sampler.compute_mixture_density(pts_phys.cpu().numpy(), l_0=l_0)
+        weights_nd = torch.tensor(1.0 / p_mix, dtype=torch.get_default_dtype(), device=device)
+
     wc = cfg['weighting']
     opt_u = torch.optim.Adam(u_net.parameters(), lr=tc['u_lr'])
 
@@ -138,11 +154,16 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
 
     u_net.train()
     final_equil, final_bc = float('inf'), float('inf')
-    tag = f"{coord_scheme}/{precision}/{arch} seed={seed}"
+    tag = f"{coord_scheme}/{precision}/{arch}{'/dem' if use_dem else ''} seed={seed}"
     pbar = tqdm(range(n_steps), desc=f"[Diag {tag}]", leave=False)
     for _ in pbar:
         opt_u.zero_grad()
-        if arch == 'mixed':
+        if use_dem:
+            loss_u, loss_equil, bc_u, cf_u, sym_u = evaluator.compute_u_loss_dem(
+                pts_nd, weights_nd, bc_dict_nd, v_max_nd, wc['w_bc_u'],
+                sym_axis_nd=sym_axis_nd, w_sym=wc['w_sym']
+            )
+        elif arch == 'mixed':
             loss_u, loss_equil, bc_u, cf_u, sym_u, cons_u = evaluator.compute_u_loss_mixed(
                 pts_nd, bc_dict_nd, v_max_nd, wc['w_pde_u'], wc['w_bc_u'],
                 crack_face_nd=crack_face_nd, w_crack_face=wc['w_crack_face'],

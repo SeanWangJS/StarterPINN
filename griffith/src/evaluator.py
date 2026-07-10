@@ -430,6 +430,117 @@ class PFPhysicsEvaluator(nn.Module):
         return total_loss, loss_equil.item(), loss_bc.item(), loss_crack_face.item(), loss_sym.item()
 
     # ------------------------------------------------------------------
+    # Loss 1b: DisplacementNet loss, Deep Energy Method (DEM) variant.
+    #
+    # Minimizes the total potential energy functional directly instead of
+    # the strong-form equilibrium PDE residual, so only FIRST spatial
+    # derivatives of (u, v) are needed (no create_graph=True second
+    # differentiation) -- see docs/griffith-ablation-study.md §12 for the
+    # variational derivation and rationale (this is tier-3 candidate C3,
+    # "Deep Energy Method", promoted out of the candidate list because the
+    # strong-form second-derivative cost was identified as the main
+    # bottleneck for scaling up the full coupled model).
+    #
+    # Energy density (matches compute_energy_and_stress()'s Amor split
+    # exactly, confirmed variationally consistent -- i.e. stress = d(psi)/d(eps)
+    # -- by construction, so this is NOT the "hybrid model" variational-
+    # inconsistency trap some DEM literature warns about):
+    #     psi = g(phi) * psi_plus + psi_minus
+    #     psi_plus  = 0.5*K*eps_vol_pos^2 + mu*tr(e_dev^2)   (degradable)
+    #     psi_minus = 0.5*K*eps_vol_neg^2                    (never degraded)
+    #
+    # Traction-free Neumann BCs (right free edge, crack faces) are NATURAL
+    # boundary conditions of this functional and are satisfied automatically
+    # by energy minimization -- no penalty terms are needed for them at all
+    # (this is the other headline DEM benefit besides the derivative-order
+    # reduction). Only genuine Dirichlet BCs (top/bottom v, symmetry-axis u)
+    # still need explicit enforcement, same as compute_u_loss().
+    # ------------------------------------------------------------------
+    def compute_u_loss_dem(self, pts_nd, weights_nd, bc_dict_nd, v_max_nd, w_bc,
+                            sym_axis_nd=None, w_sym=50.0):
+        """
+        weights_nd : (N, 1) importance weights = 1 / p_mixture(x_i, y_i),
+            where p_mixture is GriffithGeometrySampler.compute_mixture_density()
+            evaluated at the same points as pts_nd. Required because
+            sample_fixed_domain() draws from a non-uniform mixture (crack-band
+            / tip / symmetry-axis refinement), so a plain torch.mean(psi)
+            would be a biased estimate of the domain integral -- weighting by
+            1/p turns it back into an unbiased Monte Carlo estimator of
+            (1/|Omega|) * integral(psi) dOmega (up to the same constant
+            |Omega| normalization compute_u_loss's PDE-residual mean() also
+            implicitly uses, so w_bc/w_pde-style tuning transfers unchanged).
+
+        Returns the same 5-tuple shape as compute_u_loss() for drop-in
+        compatibility with the training loop / result-logging code:
+        (total_loss, energy.item(), bc_u.item(), 0.0, sym_u.item()).
+        NOTE: the second element is the total potential ENERGY value, not a
+        PDE residual -- unlike compute_u_loss()'s loss_equil, it is not
+        expected to shrink to ~0 near convergence, so 'equil_final' in
+        metrics/CSVs means something different (and is not numerically
+        comparable) for DEM runs vs strong-form runs.
+        """
+        self.v_max_nd = v_max_nd
+
+        eps_xx, eps_yy, eps_xy, x_y_nd, _, _, _, _, _ = self.compute_strains(pts_nd)
+        phi = self.phi_net(x_y_nd).detach()
+
+        K_nd, mu_nd = self.K_nd, self.mu_nd
+        eps_vol = eps_xx + eps_yy
+        eps_vol_pos = torch.relu(eps_vol)
+        eps_vol_neg = -torch.relu(-eps_vol)
+        e_xx = eps_xx - (1.0 / 3.0) * eps_vol
+        e_yy = eps_yy - (1.0 / 3.0) * eps_vol
+        e_zz = -(1.0 / 3.0) * eps_vol
+        tr_e2 = e_xx**2 + e_yy**2 + e_zz**2 + 2.0 * eps_xy**2
+
+        psi_plus = 0.5 * K_nd * eps_vol_pos**2 + mu_nd * tr_e2
+        psi_minus = 0.5 * K_nd * eps_vol_neg**2
+        g_phi = (1.0 - phi)**2 + self.k
+        psi_total = g_phi * psi_plus + psi_minus
+
+        energy = torch.mean(weights_nd * psi_total)
+
+        def eval_u(pts):
+            return self._eval_uv_raw(pts)
+
+        # ---- Dirichlet: top / bottom displacement ----
+        if self.hard_dirichlet:
+            loss_top = torch.tensor(0.0, device=pts_nd.device)
+            loss_bot = torch.tensor(0.0, device=pts_nd.device)
+        else:
+            pts_top = bc_dict_nd['top'].clone().requires_grad_(True)
+            uv_top = eval_u(pts_top)
+            loss_top = torch.mean((uv_top[:, 1:2] - v_max_nd)**2)
+
+            pts_bot = bc_dict_nd['bottom'].clone().requires_grad_(True)
+            uv_bot = eval_u(pts_bot)
+            loss_bot = torch.mean((uv_bot[:, 1:2] + v_max_nd)**2)
+
+        # ---- Rigid-body fix: u*(0, 0) = 0 ----
+        pts_c = bc_dict_nd['center']
+        uv_c = eval_u(pts_c)
+        loss_center = torch.mean(uv_c[:, 0:1]**2)
+
+        # ---- Symmetry axis x=0: u=0, τ_xy=0 ----
+        # (u=0 is a genuine Dirichlet condition; τ_xy=0 here is also kept as
+        # a soft penalty for simplicity, even though on a true symmetry plane
+        # it too would be natural under a symmetrized functional -- not worth
+        # the extra bookkeeping for this first DEM implementation.)
+        loss_sym = torch.tensor(0.0, device=pts_nd.device)
+        if sym_axis_nd is not None and sym_axis_nd.numel() > 0:
+            pts_sa = sym_axis_nd.clone().requires_grad_(True)
+            eps_xx_sa, eps_yy_sa, eps_xy_sa, _, u_sa, _, _, _, _ = self.compute_strains(pts_sa)
+            phi_sa = self.phi_net(pts_sa).detach()
+            _, _, _, txy_sa = self.compute_energy_and_stress(eps_xx_sa, eps_yy_sa, eps_xy_sa, phi_sa)
+            loss_sym = torch.mean(u_sa**2 + txy_sa**2)
+
+        loss_bc = loss_top + loss_bot + loss_center + w_sym * loss_sym
+
+        total_loss = energy + w_bc * loss_bc
+        cf_placeholder = torch.tensor(0.0, device=pts_nd.device)
+        return total_loss, energy.item(), loss_bc.item(), cf_placeholder.item(), loss_sym.item()
+
+    # ------------------------------------------------------------------
     # Loss 2: PhaseFieldNet loss (DisplacementNet is frozen)
     # ------------------------------------------------------------------
     def compute_phi_loss(self, pts_nd, history_H_nd, w_pde):
