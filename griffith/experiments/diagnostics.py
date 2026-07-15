@@ -66,7 +66,8 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
 
 def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='standard',
                             seed=0, steps=None, device=None, williams_r_floor=0.0,
-                            use_dem=False):
+                            use_dem=False, optimizer='adam', log_energy=False,
+                            l2_reg=0.0):
     """
     Train the displacement network only (phi forced to 0 everywhere, i.e.
     g(phi)=1, fully elastic) and return the trained networks + evaluator +
@@ -80,12 +81,41 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         arch='mixed' (compute_u_loss_mixed has no DEM variant yet). See
         docs/griffith-ablation-study.md §12.
 
+    The following three arguments implement the "optimization aid" candidates
+    from docs/griffith-drm-insights-experiment-plan.md §2.1 (Manav et al.
+    2024, Deep Ritz Method for phase-field fracture). All three are
+    orthogonal to use_dem/arch/coord_scheme and to each other -- they can be
+    combined freely.
+
+    optimizer : 'adam' (default) or 'rprop'. O7: the paper found Adam
+        "considerably worse" than RPROP at converging sharp/localized fields
+        in energy-based training; RPROP was used for all their reported
+        results. torch.optim.Rprop's step size self-adapts multiplicatively
+        from the given lr, so the same tc['u_lr'] value is reused as the
+        initial step size for both choices.
+    log_energy : if True and use_dem=True, use the log-energy loss transform
+        (O9, see compute_u_loss_dem's docstring). Raises if True with
+        use_dem=False (compute_u_loss has no energy term to transform).
+    l2_reg : L2 weight-regularization coefficient applied to u_net's
+        parameters (O8). Motivation: near a localized phase field the
+        maximum expressible strain is theoretically unbounded (Manav et al.
+        2024, Appendix D) -- unlike FEA, where element size implicitly caps
+        it -- so an under-resolved quadrature/sampling grid can let the DEM
+        loss converge to a spuriously low-energy, physically wrong solution.
+        L2 regularization constrains the network's expressible max slope as
+        a stand-in for that missing implicit bound. 0.0 (default) disables it.
+
     This function never touches griffith/results/ (the production output
     directory); callers (e.g. experiments/run_diagnostic.py) are responsible
     for persisting whatever they need under experiments/results/.
     """
     if use_dem and arch == 'mixed':
         raise ValueError("use_dem=True is not supported with arch='mixed' yet.")
+    if log_energy and not use_dem:
+        raise ValueError("log_energy=True requires use_dem=True (compute_u_loss "
+                          "has no energy term to log-transform).")
+    if optimizer not in ('adam', 'rprop'):
+        raise ValueError(f"Unknown optimizer: '{optimizer}' (expected 'adam' or 'rprop')")
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -144,7 +174,10 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         weights_nd = torch.tensor(1.0 / p_mix, dtype=torch.get_default_dtype(), device=device)
 
     wc = cfg['weighting']
-    opt_u = torch.optim.Adam(u_net.parameters(), lr=tc['u_lr'])
+    if optimizer == 'rprop':
+        opt_u = torch.optim.Rprop(u_net.parameters(), lr=tc['u_lr'])
+    else:
+        opt_u = torch.optim.Adam(u_net.parameters(), lr=tc['u_lr'])
 
     n_steps = steps if steps is not None else tc.get('diag_steps', 4000)
     v_max_nd = tc['v_max'] / L0   # full load, no quasi-static ramp
@@ -161,7 +194,7 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         if use_dem:
             loss_u, loss_equil, bc_u, cf_u, sym_u = evaluator.compute_u_loss_dem(
                 pts_nd, weights_nd, bc_dict_nd, v_max_nd, wc['w_bc_u'],
-                sym_axis_nd=sym_axis_nd, w_sym=wc['w_sym']
+                sym_axis_nd=sym_axis_nd, w_sym=wc['w_sym'], log_energy=log_energy
             )
         elif arch == 'mixed':
             loss_u, loss_equil, bc_u, cf_u, sym_u, cons_u = evaluator.compute_u_loss_mixed(
@@ -175,6 +208,9 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
                 crack_face_nd=crack_face_nd, w_crack_face=wc['w_crack_face'],
                 sym_axis_nd=sym_axis_nd, w_sym=wc['w_sym']
             )
+        if l2_reg > 0.0:
+            reg_term = sum(p.pow(2).sum() for p in u_net.parameters())
+            loss_u = loss_u + l2_reg * reg_term
         loss_u.backward()
         opt_u.step()
         final_equil, final_bc = loss_equil, bc_u

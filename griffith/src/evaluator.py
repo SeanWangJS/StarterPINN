@@ -457,8 +457,21 @@ class PFPhysicsEvaluator(nn.Module):
     # still need explicit enforcement, same as compute_u_loss().
     # ------------------------------------------------------------------
     def compute_u_loss_dem(self, pts_nd, weights_nd, bc_dict_nd, v_max_nd, w_bc,
-                            sym_axis_nd=None, w_sym=50.0):
+                            sym_axis_nd=None, w_sym=50.0, log_energy=False,
+                            energy_eps=1e-6):
         """
+        log_energy : if True, apply the log-energy loss transform from
+            Manav et al. 2024 (Deep Ritz Method for phase-field fracture),
+            §3.2.4/eq.20: loss_energy_term = log(energy + energy_eps) instead
+            of the raw energy value. Motivation: the raw energy's numerical
+            range can vary by orders of magnitude across problems/loading
+            steps, which makes weight-regularization coefficients and
+            stopping criteria hard to keep consistent; the log transform
+            normalizes this. See docs/griffith-drm-insights-experiment-plan.md
+            §2.1 candidate O9. Does not affect the returned 'energy' value
+            used for metrics/logging (still the raw, untransformed energy),
+            only the term actually used in total_loss / backward().
+
         weights_nd : (N, 1) importance weights = 1 / p_mixture(x_i, y_i),
             where p_mixture is GriffithGeometrySampler.compute_mixture_density()
             evaluated at the same points as pts_nd. Required because
@@ -499,6 +512,7 @@ class PFPhysicsEvaluator(nn.Module):
         psi_total = g_phi * psi_plus + psi_minus
 
         energy = torch.mean(weights_nd * psi_total)
+        energy_term = torch.log(energy + energy_eps) if log_energy else energy
 
         def eval_u(pts):
             return self._eval_uv_raw(pts)
@@ -536,7 +550,7 @@ class PFPhysicsEvaluator(nn.Module):
 
         loss_bc = loss_top + loss_bot + loss_center + w_sym * loss_sym
 
-        total_loss = energy + w_bc * loss_bc
+        total_loss = energy_term + w_bc * loss_bc
         cf_placeholder = torch.tensor(0.0, device=pts_nd.device)
         return total_loss, energy.item(), loss_bc.item(), cf_placeholder.item(), loss_sym.item()
 
