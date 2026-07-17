@@ -87,7 +87,7 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device,
 def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='standard',
                             seed=0, steps=None, device=None, williams_r_floor=0.0,
                             use_dem=False, optimizer='adam', log_energy=False,
-                            l2_reg=0.0, activation='tanh', m0=1.0):
+                            l2_reg=0.0, activation='tanh', m0=1.0, dem_quadrature='mc'):
     """
     Train the displacement network only (phi forced to 0 everywhere, i.e.
     g(phi)=1, fully elastic) and return the trained networks + evaluator +
@@ -131,6 +131,19 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         (arch='mixed' excepted, see build_networks).
     m0 : initial learnable-slope value for 'adaptive_relu' (ignored otherwise).
 
+    dem_quadrature : 'mc' (default) or 'deterministic' (C6, see
+        docs/griffith-drm-insights-experiment-plan.md §2.2). Only relevant
+        when use_dem=True. 'mc' keeps the existing random importance-
+        weighted Monte Carlo scheme (sample_fixed_domain() +
+        compute_mixture_density()). 'deterministic' replaces it with
+        GriffithGeometrySampler.sample_dem_quadrature() -- a fixed,
+        tip-graded structured grid with explicit area quadrature weights
+        (no MC sampling noise, no shape functions / mesh / field
+        interpolation). In this mode, tc['domain_points'] is ignored for
+        the DEM energy term (the quadrature grid's own resolution
+        parameters are used instead); bc/crack_face/sym_axis points are
+        unaffected. Raises if 'deterministic' is combined with use_dem=False.
+
     This function never touches griffith/results/ (the production output
     directory); callers (e.g. experiments/run_diagnostic.py) are responsible
     for persisting whatever they need under experiments/results/.
@@ -144,6 +157,10 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         raise ValueError(f"Unknown optimizer: '{optimizer}' (expected 'adam' or 'rprop')")
     if activation not in ('tanh', 'adaptive_relu'):
         raise ValueError(f"Unknown activation: '{activation}' (expected 'tanh' or 'adaptive_relu')")
+    if dem_quadrature not in ('mc', 'deterministic'):
+        raise ValueError(f"Unknown dem_quadrature: '{dem_quadrature}' (expected 'mc' or 'deterministic')")
+    if dem_quadrature == 'deterministic' and not use_dem:
+        raise ValueError("dem_quadrature='deterministic' requires use_dem=True.")
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -192,15 +209,18 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
     crack_face_phys = sampler.sample_crack_face(tc['crack_face_points'])
     sym_axis_phys = sampler.sample_symmetry_axis(tc['sym_axis_points'])
 
+    weights_nd = None
+    if use_dem and dem_quadrature == 'deterministic':
+        pts_phys, weights_phys = sampler.sample_dem_quadrature(l_0=l_0)
+        weights_nd = weights_phys * pts_phys.shape[0]
+    elif use_dem:
+        p_mix = sampler.compute_mixture_density(pts_phys.cpu().numpy(), l_0=l_0)
+        weights_nd = torch.tensor(1.0 / p_mix, dtype=torch.get_default_dtype(), device=device)
+
     pts_nd = pts_phys / L0
     bc_dict_nd = {k: v / L0 for k, v in bc_dict_phys.items()}
     crack_face_nd = crack_face_phys / L0
     sym_axis_nd = sym_axis_phys / L0
-
-    weights_nd = None
-    if use_dem:
-        p_mix = sampler.compute_mixture_density(pts_phys.cpu().numpy(), l_0=l_0)
-        weights_nd = torch.tensor(1.0 / p_mix, dtype=torch.get_default_dtype(), device=device)
 
     wc = cfg['weighting']
     if optimizer == 'rprop':
@@ -216,7 +236,10 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
 
     u_net.train()
     final_equil, final_bc = float('inf'), float('inf')
-    tag = f"{coord_scheme}/{precision}/{arch}{'/dem' if use_dem else ''} seed={seed}"
+    tag = (f"{coord_scheme}/{precision}/{arch}"
+           f"{'/dem' if use_dem else ''}"
+           f"{'/quad_det' if (use_dem and dem_quadrature == 'deterministic') else ''}"
+           f" seed={seed}")
     pbar = tqdm(range(n_steps), desc=f"[Diag {tag}]", leave=False)
     for _ in pbar:
         opt_u.zero_grad()

@@ -118,6 +118,127 @@ class GriffithGeometrySampler:
         return p_mix
 
     # ------------------------------------------------------------------
+    # C6: deterministic, tip-graded quadrature grid for the DEM energy
+    # integral -- see docs/griffith-drm-insights-experiment-plan.md §2.2
+    # (candidate C6) and PFPhysicsEvaluator.compute_u_loss_dem().
+    # ------------------------------------------------------------------
+    def sample_dem_quadrature(self, n_bg_x: int = 100, n_bg_y: int = 100,
+                               n_tip_r: int = 30, n_tip_theta: int = 60,
+                               l_0: float = 0.01, r_tip_factor: float = 4.0,
+                               y_grade_power: float = 3.0):
+        """
+        Deterministic replacement for sample_fixed_domain() +
+        compute_mixture_density()'s random importance-weighted Monte Carlo
+        scheme (candidate C6). u_net/phi_net are still evaluated pointwise
+        via plain forward passes + autograd -- no shape functions, no mesh,
+        no field interpolation -- only the *integration rule* changes, from
+        random MC sampling with 1/p importance weights to a fixed structured
+        grid with explicit area quadrature weights.
+
+        Motivation (see plan doc for the full writeup): under random
+        importance-weighted MC, a point drawn from the densely-sampled
+        crack-tip region gets a small 1/p weight so the estimator stays
+        unbiased in expectation, but at any *finite* batch size this adds
+        sampling noise on top of the (already small, since the tip disk is
+        a tiny fraction of the domain's area) tip contribution to the total
+        energy -- diluting the training signal from exactly the region whose
+        accuracy matters most for the near-tip diagnostics. A deterministic
+        grid removes the MC noise entirely (same points every step, no
+        variance to average out), which is the actual root cause fix,
+        without reintroducing FEM shape functions/elements/mesh-based field
+        representation (Manav et al. 2024's own approach, which this project
+        deliberately does NOT adopt -- see plan doc's C5 entry).
+
+        Construction (right-half domain x ∈ [0, W/2], y ∈ [-H/2, H/2]):
+          - Background: a Cartesian tensor grid covering the full rectangle,
+            uniform in x, graded (power-law, finer near y=0) in y so the
+            crack band -- which runs the full x-range, not just near the tip
+            -- still gets extra resolution. Grid points that fall inside the
+            crack-tip disk (see below) are dropped to avoid double-counting;
+            each kept point's quadrature weight is its Cartesian cell area
+            dx * dy_j (midpoint/box rule).
+          - Crack tip: a polar grid centered at (a, 0), radius up to
+            r_tip_factor * l_0, with geometrically graded radial edges
+            (finer near r=0) and uniform angular spacing. Each node's weight
+            is the exact area of its annular-sector cell,
+            0.5*(r_out^2 - r_in^2)*dtheta -- exact, not an approximation,
+            regardless of the radial grading.
+
+        Returns
+        -------
+        pts_phys : (N, 2) torch tensor, physical (x, y) quadrature nodes.
+        weights_phys : (N, 1) torch tensor, area quadrature weights (units
+            of physical area). sum(weights_phys) approximates the right-half
+            domain area (W/2)*H, up to the small stair-step error where the
+            uniform/graded background grid meets the tip disk boundary.
+
+        NOTE on plugging into compute_u_loss_dem(): that function expects
+        weights_nd such that torch.mean(weights_nd * psi) approximates the
+        raw energy integral ∫ psi dΩ_phys (see its docstring) -- i.e. the
+        same convention as weights_nd = 1/p_mixture used for the random MC
+        scheme. Since torch.mean divides by N, callers must rescale:
+            weights_nd = weights_phys * N   (N = pts_phys.shape[0])
+        so that torch.mean(weights_nd * psi) == sum(weights_phys * psi).
+        """
+        r_tip = r_tip_factor * l_0
+
+        # ---- background: uniform in x, graded (finer near y=0) in y ----
+        x_edges = np.linspace(0.0, self.W / 2.0, n_bg_x + 1)
+        x_mid = 0.5 * (x_edges[:-1] + x_edges[1:])
+        dx = np.diff(x_edges)   # (n_bg_x,) -- uniform, but kept general
+
+        half = self.H / 2.0
+        n_half = max(1, n_bg_y // 2)
+        s = np.linspace(0.0, 1.0, n_half + 1) ** y_grade_power
+        half_edges = half * s   # 0 .. H/2, finer near 0
+        y_edges = np.concatenate([-half_edges[::-1], half_edges[1:]])
+        y_mid = 0.5 * (y_edges[:-1] + y_edges[1:])
+        dy = np.diff(y_edges)
+
+        Xg, Yg = np.meshgrid(x_mid, y_mid, indexing='ij')
+        Dxg, Dyg = np.meshgrid(dx, dy, indexing='ij')
+        bg_pts = np.hstack([Xg.reshape(-1, 1), Yg.reshape(-1, 1)])
+        bg_w = (Dxg * Dyg).reshape(-1, 1)
+
+        inside_tip = (bg_pts[:, 0:1] - self.a) ** 2 + bg_pts[:, 1:2] ** 2 < r_tip ** 2
+        keep = ~inside_tip.flatten()
+        bg_pts = bg_pts[keep]
+        bg_w = bg_w[keep]
+
+        # ---- crack-tip disk: polar grid, geometrically graded radius ----
+        p = 2.0   # grading power, >1 concentrates radial edges near r=0
+        k = np.arange(0, n_tip_r + 1)
+        r_edges = r_tip * (k / n_tip_r) ** p
+        r_mid = 0.5 * (r_edges[:-1] + r_edges[1:])
+
+        theta_edges = np.linspace(-np.pi, np.pi, n_tip_theta + 1)
+        theta_mid = 0.5 * (theta_edges[:-1] + theta_edges[1:])
+        dtheta = theta_edges[1] - theta_edges[0]
+
+        Rm, Tm = np.meshgrid(r_mid, theta_mid, indexing='ij')
+        r_out2 = np.broadcast_to((r_edges[1:] ** 2)[:, None], Rm.shape)
+        r_in2 = np.broadcast_to((r_edges[:-1] ** 2)[:, None], Rm.shape)
+        tip_x = self.a + Rm * np.cos(Tm)
+        tip_y = Rm * np.sin(Tm)
+        tip_w = 0.5 * (r_out2 - r_in2) * dtheta   # exact annular-sector area
+
+        tip_pts = np.hstack([tip_x.reshape(-1, 1), tip_y.reshape(-1, 1)])
+        tip_w = tip_w.reshape(-1, 1)
+
+        inside_domain = (tip_pts[:, 0:1] >= 0.0) & (tip_pts[:, 0:1] <= self.W / 2.0) & \
+                        (np.abs(tip_pts[:, 1:2]) <= self.H / 2.0)
+        inside_domain = inside_domain.flatten()
+        tip_pts = tip_pts[inside_domain]
+        tip_w = tip_w[inside_domain]
+
+        pts = np.vstack([bg_pts, tip_pts])
+        weights = np.vstack([bg_w, tip_w])
+
+        pts_t = torch.tensor(pts, dtype=torch.get_default_dtype(), device=self.device)
+        w_t = torch.tensor(weights, dtype=torch.get_default_dtype(), device=self.device)
+        return pts_t, w_t
+
+    # ------------------------------------------------------------------
     # Initial crack seed points  (right half: x ∈ [0, a])
     # ------------------------------------------------------------------
     def get_initial_crack_points(self, num_points):
