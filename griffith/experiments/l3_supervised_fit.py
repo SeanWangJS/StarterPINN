@@ -35,7 +35,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from src.network import DisplacementNet
+from src.network import DisplacementNet, AdaptiveReLU
 from src.evaluator import get_u_in_dim, williams_features, cartesian_to_elliptic
 from experiments.debug_williams_sign import load_cfg, analytical_params, sample_near_tip_points
 from experiments.diagnostics import set_seed
@@ -102,7 +102,7 @@ def rel_l2(pred, target):
 
 
 def run_l3_fit(coord_scheme, cfg=None, williams_r_floor=0.0, seed=0, steps=3000,
-                lr=None, verbose=True):
+                lr=None, verbose=True, activation='tanh', m0=1.0):
     cfg = cfg if cfg is not None else load_cfg()
     set_seed(seed)
     torch.set_default_dtype(torch.float64)
@@ -121,13 +121,18 @@ def run_l3_fit(coord_scheme, cfg=None, williams_r_floor=0.0, seed=0, steps=3000,
     pts_te = torch.tensor(np.stack([x_te, y_te], axis=1))
     target_te = torch.tensor(np.stack([u_te, v_te], axis=1))
 
+    if activation not in ('tanh', 'adaptive_relu'):
+        raise ValueError(f"Unknown activation: '{activation}' (expected 'tanh' or 'adaptive_relu')")
+    act = None if activation == 'tanh' else AdaptiveReLU(m0=m0)
+
     u_in_dim = get_u_in_dim(coord_scheme)
     u_net = DisplacementNet(in_dim=u_in_dim, out_dim=2,
                              hidden_layers=mc['hidden_layers'],
-                             hidden_neurons=mc['hidden_neurons'])
+                             hidden_neurons=mc['hidden_neurons'], activation=act)
     opt = torch.optim.Adam(u_net.parameters(), lr=lr)
 
     tag = coord_scheme + (f"_rfloor{williams_r_floor:g}" if coord_scheme == 'williams' and williams_r_floor > 0 else "")
+    tag = tag + (f"_actadaprelu_m0{m0:g}" if activation == 'adaptive_relu' else "")
     pbar = tqdm(range(steps), desc=f"[L3 {tag} seed={seed}]", leave=False, disable=not verbose)
     final_train_mse = None
     for step in pbar:
@@ -149,6 +154,7 @@ def run_l3_fit(coord_scheme, cfg=None, williams_r_floor=0.0, seed=0, steps=3000,
     return {
         'tag': tag, 'coord_scheme': coord_scheme, 'williams_r_floor': williams_r_floor,
         'seed': seed, 'train_final_mse': final_train_mse, 'test_l2_rel_err': test_l2_rel_err,
+        'activation': activation, 'm0': m0,
     }
 
 
@@ -159,6 +165,11 @@ def main():
     parser.add_argument('--williams_r_floor', type=float, default=0.0)
     parser.add_argument('--seeds', type=int, nargs='+', default=[0, 1, 2])
     parser.add_argument('--steps', type=int, default=3000)
+    parser.add_argument('--activations', choices=['tanh', 'adaptive_relu'], nargs='+', default=['tanh'],
+                         help="O10 (see docs/griffith-drm-insights-experiment-plan.md stage 4): compare "
+                              "'tanh' (default) against 'adaptive_relu' fitting capability at the L1 level.")
+    parser.add_argument('--m0', type=float, default=2.0,
+                         help='Initial learnable-slope value for adaptive_relu (ignored for tanh).')
     args = parser.parse_args()
 
     cfg = load_cfg()
@@ -173,19 +184,21 @@ def main():
 
     rows = []
     for coord_scheme, r_floor in jobs:
-        for seed in args.seeds:
-            row = run_l3_fit(coord_scheme, cfg=cfg, williams_r_floor=r_floor, seed=seed, steps=args.steps)
-            rows.append(row)
-            print(f"  {row['tag']:24s} seed={seed}  train_mse={row['train_final_mse']:.4e}  "
-                  f"test_l2_rel_err={row['test_l2_rel_err']:.4e}")
+        for activation in args.activations:
+            for seed in args.seeds:
+                row = run_l3_fit(coord_scheme, cfg=cfg, williams_r_floor=r_floor, seed=seed,
+                                  steps=args.steps, activation=activation, m0=args.m0)
+                rows.append(row)
+                print(f"  {row['tag']:24s} seed={seed}  train_mse={row['train_final_mse']:.4e}  "
+                      f"test_l2_rel_err={row['test_l2_rel_err']:.4e}")
 
     print("\n" + "=" * 78)
     print("L3 summary (mean +/- std over seeds)")
     print("=" * 78)
     print(f"{'scheme':24s} {'train_mse (mean)':>18s} {'test_l2_rel_err (mean +/- std)':>30s}")
     tags_seen = []
-    for coord_scheme, r_floor in jobs:
-        tag = coord_scheme + (f"_rfloor{r_floor:g}" if coord_scheme == 'williams' and r_floor > 0 else "")
+    for row in rows:
+        tag = row['tag']
         if tag in tags_seen:
             continue
         tags_seen.append(tag)

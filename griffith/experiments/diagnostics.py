@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from src.network import DisplacementNet, PhaseFieldNet
+from src.network import DisplacementNet, PhaseFieldNet, AdaptiveReLU
 from src.evaluator import PFPhysicsEvaluator, get_u_in_dim
 
 
@@ -27,7 +27,8 @@ def set_seed(seed):
     torch.manual_seed(seed)
 
 
-def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
+def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device,
+                    activation='tanh', m0=1.0):
     """
     Construct (u_net, phi_net) for the requested architecture factor.
 
@@ -42,24 +43,43 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
                            exactly +-v_max*, removing loss_top/loss_bot from
                            the soft-penalty loss_bc entirely. See
                            docs/griffith-ablation-study.md §9.
+
+    activation : 'tanh' (default) or 'adaptive_relu' (O10, see
+        docs/griffith-drm-insights-experiment-plan.md §2.1 / stage 4). Both
+        u_net and phi_net use the same activation choice. 'adaptive_relu'
+        builds one independent AdaptiveReLU instance (own learnable m_k) per
+        hidden layer, per network -- see src/network.py's MLP.
+    m0 : initial value of each layer's learnable slope m_k when
+        activation='adaptive_relu' (ignored for 'tanh'). Manav et al. 2024
+        use m0=1 for a small 1D problem and m0=2-3 for their 2D problems.
     """
+    if activation == 'tanh':
+        act = None   # MLP defaults to nn.Tanh()
+    elif activation == 'adaptive_relu':
+        act = AdaptiveReLU(m0=m0)
+    else:
+        raise ValueError(f"Unknown activation: '{activation}' (expected 'tanh' or 'adaptive_relu')")
+
     u_in_dim = get_u_in_dim(coord_scheme)
     if arch == 'mixed':
         from experiments.mixed_pinn_variant import MixedDisplacementNet
+        if activation != 'tanh':
+            raise ValueError("activation='adaptive_relu' is not supported with arch='mixed' yet "
+                              "(MixedDisplacementNet hardcodes nn.Tanh()).")
         u_net = MixedDisplacementNet(
             in_dim=u_in_dim, hidden_layers=hidden_layers, hidden_neurons=hidden_neurons
         ).to(device)
     elif arch in ('standard', 'y_sym', 'y_sym_hard'):
         u_net = DisplacementNet(
             in_dim=u_in_dim, out_dim=2,
-            hidden_layers=hidden_layers, hidden_neurons=hidden_neurons
+            hidden_layers=hidden_layers, hidden_neurons=hidden_neurons, activation=act
         ).to(device)
     else:
         raise ValueError(f"Unknown arch: '{arch}'")
 
     phi_net = PhaseFieldNet(
         in_dim=2, out_dim=1,
-        hidden_layers=hidden_layers, hidden_neurons=hidden_neurons
+        hidden_layers=hidden_layers, hidden_neurons=hidden_neurons, activation=act
     ).to(device)
     return u_net, phi_net
 
@@ -67,7 +87,7 @@ def build_networks(coord_scheme, arch, hidden_layers, hidden_neurons, device):
 def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='standard',
                             seed=0, steps=None, device=None, williams_r_floor=0.0,
                             use_dem=False, optimizer='adam', log_energy=False,
-                            l2_reg=0.0):
+                            l2_reg=0.0, activation='tanh', m0=1.0):
     """
     Train the displacement network only (phi forced to 0 everywhere, i.e.
     g(phi)=1, fully elastic) and return the trained networks + evaluator +
@@ -105,6 +125,12 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
         L2 regularization constrains the network's expressible max slope as
         a stand-in for that missing implicit bound. 0.0 (default) disables it.
 
+    activation : 'tanh' (default) or 'adaptive_relu' (O10). Passed straight
+        through to build_networks -- see its docstring for details. Also
+        orthogonal to use_dem/optimizer/log_energy/l2_reg/arch/coord_scheme
+        (arch='mixed' excepted, see build_networks).
+    m0 : initial learnable-slope value for 'adaptive_relu' (ignored otherwise).
+
     This function never touches griffith/results/ (the production output
     directory); callers (e.g. experiments/run_diagnostic.py) are responsible
     for persisting whatever they need under experiments/results/.
@@ -116,6 +142,8 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
                           "has no energy term to log-transform).")
     if optimizer not in ('adam', 'rprop'):
         raise ValueError(f"Unknown optimizer: '{optimizer}' (expected 'adam' or 'rprop')")
+    if activation not in ('tanh', 'adaptive_relu'):
+        raise ValueError(f"Unknown activation: '{activation}' (expected 'tanh' or 'adaptive_relu')")
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -129,7 +157,8 @@ def run_elastic_diagnostic(cfg, coord_scheme='both', precision='fp32', arch='sta
 
     mc = cfg['model']
     u_net, phi_net = build_networks(
-        coord_scheme, arch, mc['hidden_layers'], mc['hidden_neurons'], device)
+        coord_scheme, arch, mc['hidden_layers'], mc['hidden_neurons'], device,
+        activation=activation, m0=m0)
 
     if arch == 'mixed':
         from experiments.mixed_pinn_variant import MixedPFEvaluator
