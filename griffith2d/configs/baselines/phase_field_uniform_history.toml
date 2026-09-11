@@ -1,0 +1,35 @@
+[benchmark]
+kind = "uniform_history"
+half_width = 1.0
+history = 3.0
+
+[material]
+fracture_toughness = 2.4
+length_scale = 0.2
+
+[quadrature]
+training_order = 16
+evaluation_order = 32
+
+[network]
+hidden_width = 16
+seed = 1729
+zero_initialization = true
+dtype = "float64"
+
+[optimizer]
+adam_steps = 1000
+adam_learning_rate = 0.01
+lbfgs_max_iter = 200
+lbfgs_tolerance_grad = 1e-10
+lbfgs_tolerance_change = 1e-12
+line_search = "strong_wolfe"
+
+[acceptance]
+phase_relative_l2 = 1e-5
+phase_max_abs = 1e-5
+energy_relative_error = 1e-10
+residual_relative_rms = 1e-8
+boundary_flux_max_scaled = 1e-10
+hard_boundary_max_abs = 0.0
+bounds_violation = 1e-12

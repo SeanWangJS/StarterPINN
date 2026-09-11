@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openpinn-griffith2d"
+version = "0.1.0"
+description = "Theory-driven PINN/DEM phase-field fracture core"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+]
+
+[project.scripts]
+griffith2d-elastic-tension = "griffith2d.benchmarks.elastic_tension:main"
+griffith2d-phase-field = "griffith2d.benchmarks.phase_field:main"
+griffith2d-coupling = "griffith2d.benchmarks.coupling:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

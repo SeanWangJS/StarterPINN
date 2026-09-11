@@ -1,0 +1,49 @@
+[benchmark]
+kind = "staggered_uniform_tension"
+
+[geometry]
+length = 1.0
+height = 1.0
+
+[elastic_material]
+young_modulus = 1.0
+poisson_ratio = 0.3
+
+[phase_material]
+fracture_toughness = 1.0
+length_scale = 0.1
+residual_stiffness = 1e-3
+
+[loading]
+tractions = [0.0, 0.02, 0.04, 0.02, 0.03, 0.05]
+
+[quadrature]
+coupling_order = 4
+
+[network]
+hidden_width = 16
+seed = 1729
+dtype = "float64"
+
+[optimizer]
+adam_steps = 1000
+warm_start_adam_steps = 0
+adam_learning_rate = 0.01
+lbfgs_max_iter = 200
+lbfgs_tolerance_grad = 1e-10
+lbfgs_tolerance_change = 1e-12
+line_search = "strong_wolfe"
+
+[coupling]
+max_iterations = 6
+displacement_relative_tolerance = 5e-4
+phase_absolute_tolerance = 1e-6
+history_relative_tolerance = 1e-6
+energy_relative_tolerance = 1e-6
+
+[acceptance]
+displacement_relative_error = 2e-2
+phase_absolute_error = 1e-6
+reaction_relative_error = 2e-2
+scalar_residual_absolute = 1e-6
+history_hold_absolute = 1e-14

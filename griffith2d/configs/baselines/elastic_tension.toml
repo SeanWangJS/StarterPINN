@@ -1,0 +1,37 @@
+[geometry]
+length = 1.0
+height = 1.0
+
+[material]
+young_modulus = 1.0
+poisson_ratio = 0.3
+
+[loading]
+traction = 0.1
+
+[quadrature]
+training_order = 4
+evaluation_order = 8
+
+[network]
+hidden_width = 16
+seed = 1729
+dtype = "float64"
+
+[optimizer]
+adam_steps = 1000
+adam_learning_rate = 0.01
+lbfgs_max_iter = 200
+lbfgs_tolerance_grad = 1e-10
+lbfgs_tolerance_change = 1e-12
+line_search = "strong_wolfe"
+
+[acceptance]
+quadrature_absolute = 1e-12
+displacement_relative_l2 = 2e-3
+strain_relative_l2 = 5e-3
+stress_relative_l2 = 5e-3
+reaction_relative = 5e-3
+traction_relative_rms = 2e-2
+equilibrium_relative_rms = 2e-2
+hard_boundary_max_abs = 1e-14
