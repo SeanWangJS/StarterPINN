@@ -7,6 +7,7 @@ from griffith2d.discretization import (
     gauss_legendre,
     interval_quadrature,
     line_quadrature,
+    partitioned_rectangle_quadrature,
     rectangle_quadrature,
 )
 
@@ -69,6 +70,23 @@ def test_rectangle_rule_integrates_separable_polynomial() -> None:
     assert rule.points.shape == (16, 2)
     torch.testing.assert_close(rule.weights.sum(), torch.tensor(12.0, dtype=DTYPE))
     torch.testing.assert_close(result, torch.tensor(expected, dtype=DTYPE), atol=1e-12, rtol=0.0)
+
+
+def test_partitioned_rectangle_retains_area_and_local_band_weight() -> None:
+    rule = partitioned_rectangle_quadrature(
+        (-2.0, -0.5, 0.5, 2.0), (-1.0, -0.1, 0.1, 1.0), order=3
+    )
+    band = (rule.points[:, 1].abs() < 0.1).to(DTYPE)
+
+    assert rule.points.shape == (81, 2)
+    torch.testing.assert_close(rule.integrate(torch.ones_like(band)), torch.tensor(8.0, dtype=DTYPE))
+    torch.testing.assert_close(rule.integrate(band), torch.tensor(0.8, dtype=DTYPE))
+
+
+def test_partition_edges_cannot_overlap_or_be_nonfinite() -> None:
+    for x_edges in ((-1.0, 0.0, 0.0, 1.0), (-1.0, float("nan"), 1.0)):
+        with pytest.raises(ValueError):
+            partitioned_rectangle_quadrature(x_edges, (-1.0, 1.0), order=2)
 
 
 def test_smooth_nonpolynomial_error_decreases_with_order() -> None:

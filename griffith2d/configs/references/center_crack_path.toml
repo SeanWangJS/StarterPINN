@@ -1,0 +1,28 @@
+[benchmark]
+kind = "center_crack_fem_path"
+
+[geometry]
+half_width = 2.0
+half_height = 1.0
+crack_half_length = 0.5
+
+[elastic_material]
+young_modulus = 1.0
+poisson_ratio = 0.3
+
+[phase_material]
+fracture_toughness = 1.0
+length_scale = 0.2
+residual_stiffness = 1e-3
+
+[loading]
+imposed_displacements = [0.0, 0.01, 0.02, 0.01, 0.0]
+
+[mesh]
+cells_x = 12
+cells_y = 12
+
+[solver]
+max_iterations = 30
+phase_tolerance = 1e-7
+relative_tolerance = 1e-7

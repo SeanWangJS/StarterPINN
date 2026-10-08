@@ -4,9 +4,13 @@ from .degraded_elastic_dem import (
 	DegradedElasticDEMTrainingConfig,
 	DegradedElasticDEMTrainingResult,
 	DegradedElasticEnergyComponents,
+	FrozenPlateElasticDEMTrainingConfig,
+	FrozenPlateElasticDEMTrainingResult,
 	degraded_elastic_potential_energy,
 	expand_uniform_phase,
+	frozen_plate_elastic_energy,
 	train_degraded_elastic_dem,
+	train_frozen_plate_elastic_dem,
 )
 from .elastic_dem import (
 	ElasticDEMTrainingConfig,
@@ -43,6 +47,8 @@ __all__ = [
 	"DegradedElasticEnergyComponents",
 	"DegradedElasticDEMTrainingConfig",
 	"DegradedElasticDEMTrainingResult",
+	"FrozenPlateElasticDEMTrainingConfig",
+	"FrozenPlateElasticDEMTrainingResult",
 	"PhaseFieldDEMTrainingConfig",
 	"PhaseFieldDEMTrainingResult",
 	"PhaseFieldEnergyComponents",
@@ -55,6 +61,7 @@ __all__ = [
 	"active_energy_at_points",
 	"elastic_potential_energy",
 	"expand_uniform_phase",
+	"frozen_plate_elastic_energy",
 	"initial_staggered_state",
 	"degraded_elastic_potential_energy",
 	"phase_field_energy",
@@ -63,5 +70,6 @@ __all__ = [
 	"solve_uniform_phase",
 	"train_elastic_dem",
 	"train_degraded_elastic_dem",
+	"train_frozen_plate_elastic_dem",
 	"train_phase_field_dem",
 ]

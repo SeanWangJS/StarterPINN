@@ -17,6 +17,9 @@ griffith2d-phase-field = "griffith2d.benchmarks.phase_field:main"
 griffith2d-coupling = "griffith2d.benchmarks.coupling:main"
 
 [project.optional-dependencies]
+reference = [
+    "scikit-fem>=11,<12",
+]
 test = [
     "pytest>=8",
 ]

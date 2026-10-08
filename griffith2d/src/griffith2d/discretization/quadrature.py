@@ -136,6 +136,39 @@ def rectangle_quadrature(
     return QuadratureRule(points, weights.reshape(-1))
 
 
+def partitioned_rectangle_quadrature(
+    x_edges: tuple[float, ...],
+    y_edges: tuple[float, ...],
+    order: int,
+    *,
+    dtype: torch.dtype = torch.float64,
+    device: torch.device | str | None = None,
+) -> QuadratureRule:
+    """Join weighted rectangle rules over an explicit, non-overlapping partition."""
+
+    def validated_edges(edges: tuple[float, ...], name: str) -> tuple[float, ...]:
+        if len(edges) < 2:
+            raise ValueError(f"{name} must contain at least two edges")
+        values = tuple(_finite_bound(edge, name) for edge in edges)
+        if any(left >= right for left, right in zip(values, values[1:])):
+            raise ValueError(f"{name} edges must be strictly increasing")
+        return values
+
+    x_values = validated_edges(x_edges, "x_edges")
+    y_values = validated_edges(y_edges, "y_edges")
+    rules = [
+        rectangle_quadrature(
+            (x_left, x_right), (y_lower, y_upper), order, dtype=dtype, device=device
+        )
+        for x_left, x_right in zip(x_values, x_values[1:])
+        for y_lower, y_upper in zip(y_values, y_values[1:])
+    ]
+    return QuadratureRule(
+        torch.cat([rule.points for rule in rules]),
+        torch.cat([rule.weights for rule in rules]),
+    )
+
+
 def line_quadrature(
     start: Tensor,
     end: Tensor,
