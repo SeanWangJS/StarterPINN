@@ -370,35 +370,170 @@ PINN 理论本身的一部分。
 
 
 
-强形式要求点态满足 $\nabla\cdot\boldsymbol{\sigma}=0$。弱形式改为：选任意满足
-齐次 Dirichlet 条件的虚位移 $\delta\boldsymbol{u}$，使
+强形式要求式 (1)–(3) 逐点成立，其中式 (1) 含应力的空间导数，进而含位移的二阶
+导数。本节把它改写为一个积分恒等式，使位移只需一阶导数，并说明两种表述在何种
+意义下等价。推导使用指标记法，重复指标求和，$(\cdot)_{,j}=\partial(\cdot)/\partial x_j$。
+
+### 5.1 试探空间与测试空间
+
+先区分两类函数。待求位移属于**试探空间**
 
 $$
-\delta\boldsymbol{u}=\boldsymbol{0}\quad\text{on }\Gamma_u,
+\mathcal U_{\bar u}
+=\{\boldsymbol u\in(H^1(\Omega))^2:\ \boldsymbol u=\bar{\boldsymbol u}
+\ \text{on }\Gamma_u\},
 $$
 
-并令平衡方程乘以它后在区域积分：
+即事先满足位移边界条件 (2)。用来检验平衡的虚位移属于**测试空间**
+
+$$
+\mathcal V_0
+=\{\delta\boldsymbol u\in(H^1(\Omega))^2:\ \delta\boldsymbol u=\boldsymbol 0
+\ \text{on }\Gamma_u\}.
+$$
+
+$\mathcal V_0$ 中的函数是两个可行位移之差：若
+$\boldsymbol u_1,\boldsymbol u_2\in\mathcal U_{\bar u}$，则
+$\boldsymbol u_1-\boldsymbol u_2$ 在 $\Gamma_u$ 上为零。因此虚位移描述的是"在不破坏
+位移约束的前提下，位移场还能怎样变化"。
+
+### 5.2 加权积分
+
+设 $\boldsymbol u$ 足够光滑并满足式 (1)。对任意 $\delta\boldsymbol u\in\mathcal V_0$，
+将式 (1) 与它做点积并在区域上积分：
+
+$$
+\int_\Omega\delta u_i\,\sigma_{ij,j}\,d\Omega
++\int_\Omega\delta u_i\,b_i\,d\Omega=0. \tag{5-1}
+$$
+
+这一步只是把逐点为零的量加权求和，仍然等价于原方程，导数阶数尚未改变。
+
+### 5.3 分部积分：乘积求导与散度定理
+
+对第一项使用乘积求导法则：
+
+$$
+(\delta u_i\,\sigma_{ij})_{,j}
+=\delta u_{i,j}\,\sigma_{ij}+\delta u_i\,\sigma_{ij,j}. \tag{5-2}
+$$
+
+移项后积分，并对左端的散度项使用散度定理
+$\int_\Omega F_{j,j}\,d\Omega=\int_{\partial\Omega}F_jn_j\,d\Gamma$，取
+$F_j=\delta u_i\sigma_{ij}$：
+
+$$
+\int_\Omega\delta u_i\,\sigma_{ij,j}\,d\Omega
+=\int_{\partial\Omega}\delta u_i\,\sigma_{ij}n_j\,d\Gamma
+-\int_\Omega\delta u_{i,j}\,\sigma_{ij}\,d\Omega. \tag{5-3}
+$$
+
+这就是多维的分部积分：应力的导数被移到虚位移上，同时留下一个边界积分。
+代入式 (5-1)，得到
+
+$$
+\int_\Omega\delta u_{i,j}\,\sigma_{ij}\,d\Omega
+=\int_\Omega\delta u_i\,b_i\,d\Omega
++\int_{\partial\Omega}\delta u_i\,\sigma_{ij}n_j\,d\Gamma.
+$$
+
+### 5.4 利用应力对称性化为应变
+
+把虚位移梯度拆成对称与反对称部分：
+
+$$
+\delta u_{i,j}
+=\underbrace{\tfrac12(\delta u_{i,j}+\delta u_{j,i})}_{\varepsilon_{ij}(\delta\boldsymbol u)}
++\underbrace{\tfrac12(\delta u_{i,j}-\delta u_{j,i})}_{\omega_{ij}(\delta\boldsymbol u)}.
+$$
+
+由于 $\sigma_{ij}=\sigma_{ji}$ 而 $\omega_{ij}=-\omega_{ji}$，交换哑指标可得
+
+$$
+\omega_{ij}\sigma_{ij}=\omega_{ji}\sigma_{ji}=-\omega_{ij}\sigma_{ij}
+\quad\Longrightarrow\quad
+\omega_{ij}\sigma_{ij}=0.
+$$
+
+因此 $\delta u_{i,j}\sigma_{ij}=\varepsilon_{ij}(\delta\boldsymbol u)\,\sigma_{ij}$。
+力学上，这表示虚位移中的局部刚体转动不做内功，与第 2 节"转动不产生应变"一致。
+
+### 5.5 拆分边界项
+
+按 $\partial\Omega=\Gamma_u\cup\Gamma_t$ 拆分边界积分：
+
+- 在 $\Gamma_u$ 上，$\delta\boldsymbol u=\boldsymbol 0$，该部分为零。这里的面力是
+  未知反力，测试空间的选取恰好使它不出现在方程中；
+- 在 $\Gamma_t$ 上，由式 (3)，$\sigma_{ij}n_j=\bar t_i$，用已知面力替换。
+
+于是得到位移问题的弱形式：求 $\boldsymbol u\in\mathcal U_{\bar u}$，使对所有
+$\delta\boldsymbol u\in\mathcal V_0$，
 
 $$
 \int_\Omega
-\delta\boldsymbol{u}\cdot(\nabla\cdot\boldsymbol{\sigma}+\boldsymbol{b})\,d\Omega=0.
-$$
-
-对应力散度项分部积分，得到
-
-$$
-\int_\Omega
-\boldsymbol{\varepsilon}(\delta\boldsymbol{u}):\boldsymbol{\sigma}\,d\Omega
+\boldsymbol{\varepsilon}(\delta\boldsymbol{u}):\boldsymbol{\sigma}(\boldsymbol u)\,d\Omega
 =\int_\Omega\delta\boldsymbol{u}\cdot\boldsymbol{b}\,d\Omega
-+\int_{\Gamma_t}\delta\boldsymbol{u}\cdot\bar{\boldsymbol{t}}\,d\Gamma.
++\int_{\Gamma_t}\delta\boldsymbol{u}\cdot\bar{\boldsymbol{t}}\,d\Gamma. \tag{5-4}
 $$
 
-这就是虚功原理 [1]。它只要求 $\boldsymbol{u}\in(H^1(\Omega))^d$，因而可以容纳
-比强形式更低的正则性；对神经网络而言，能避免显式构造应力的空间散度。
+左端是内力虚功，右端是外力虚功，这就是虚功原理 [1]。三类方程在式 (5-4) 中的处理
+方式各不相同：式 (1) 以积分形式保留；式 (3) 被代入边界项；式 (2) 不出现在方程里，
+由试探空间 $\mathcal U_{\bar u}$ 保证。
 
-请注意一个常见误解：弱形式并不等于“把残差平方后积分”。弱形式要求对所有允许的
-虚位移成立。在线弹性或存在势能的本构中，它等价于总势能的驻值条件，这才给出 DEM
-可以直接最小化的标量目标 [3,4]。
+### 5.6 二维展开
+
+按第 2 节的张量剪应变，内虚功的被积函数为
+
+$$
+\boldsymbol\varepsilon(\delta\boldsymbol u):\boldsymbol\sigma
+=\delta u_{,x}\,\sigma_{xx}
++\delta v_{,y}\,\sigma_{yy}
++(\delta u_{,y}+\delta v_{,x})\,\tau_{xy}.
+$$
+
+剪切项来自 $\varepsilon_{xy}\sigma_{xy}+\varepsilon_{yx}\sigma_{yx}
+=2\varepsilon_{xy}\tau_{xy}$，系数 2 被工程剪应变
+$\delta\gamma_{xy}=\delta u_{,y}+\delta v_{,x}$ 吸收。若改用 Voigt 记号
+$\{\varepsilon_{xx},\varepsilon_{yy},\gamma_{xy}\}$，该式就是
+$\delta\boldsymbol\varepsilon^T\boldsymbol\sigma$，有限元刚度矩阵
+$\int\boldsymbol B^T\boldsymbol D\boldsymbol B\,d\Omega$ 即由此离散得到。
+
+### 5.7 从弱形式回到强形式
+
+上面的推导说明强解满足式 (5-4)。反过来，若式 (5-4) 的解足够光滑，把 5.3–5.5 节逆向
+进行，可得对所有 $\delta\boldsymbol u\in\mathcal V_0$：
+
+$$
+\int_\Omega\delta\boldsymbol u\cdot(\nabla\cdot\boldsymbol\sigma+\boldsymbol b)\,d\Omega
+-\int_{\Gamma_t}\delta\boldsymbol u\cdot(\boldsymbol\sigma\boldsymbol n-\bar{\boldsymbol t})\,d\Gamma
+=0. \tag{5-5}
+$$
+
+分两步选取测试函数：
+
+1. 先取在整个边界上为零的 $\delta\boldsymbol u$，边界项消失。由变分法基本引理
+   （若连续函数 $\boldsymbol f$ 满足 $\int_\Omega\delta\boldsymbol u\cdot\boldsymbol f\,d\Omega=0$
+   对所有这样的 $\delta\boldsymbol u$ 成立，则 $\boldsymbol f\equiv\boldsymbol 0$），
+   得到式 (1) 在 $\Omega$ 内成立；
+2. 于是式 (5-5) 的区域积分恒为零，只剩边界项。由于 $\delta\boldsymbol u$ 在 $\Gamma_t$
+   上可以任意取值，同理得到式 (3) 在 $\Gamma_t$ 上成立。
+
+这说明牵引条件不必事先施加，它是弱形式对任意虚位移成立的**结果**，故称自然边界
+条件；位移条件则必须事先写进试探空间，故称本质边界条件。第 1 步也说明，弱形式
+并非只要求"整体平均平衡"：测试函数可以只在任意小的区域内非零，因而能检出任何
+局部不平衡。
+
+### 5.8 正则性要求的变化
+
+式 (5-4) 中，$\boldsymbol u$ 和 $\delta\boldsymbol u$ 都只出现一阶导数，因此只需
+$\boldsymbol u\in(H^1(\Omega))^2$，即位移及其一阶弱导数平方可积；强形式则要求应力
+可微，位移通常需二阶可导。分片线性有限元在单元边界处导数间断，不能直接代入式 (1)，
+却是式 (5-4) 的合法试探函数。对神经网络而言，式 (5-4) 避免了显式构造应力的空间散度。
+
+弱形式并不等于"把残差平方后积分"：$\int_\Omega|\boldsymbol r|^2\,d\Omega$ 是最小
+二乘目标，而式 (5-4) 要求对所有允许的虚位移成立。Galerkin 有限元取有限个形函数作为
+测试函数，VPINN 类方法显式选取一组测试函数。在线弹性或存在势能的本构中，式 (5-4)
+还等价于总势能的驻值条件，这给出了 DEM 可以直接最小化的标量目标 [3,4]，见第 6 节。
 
 ## 6. 从弱形式到 DEM：总势能驻值
 
